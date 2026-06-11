@@ -42,40 +42,27 @@ The egress IPs used to whitelist SPCS on the Snowflake Postgres network policy (
 
 ---
 
+### Caller's rights token expiry UX
+
+When a caller token expires mid-session (user idle for >30 minutes without the refresh snippet triggering, or browser tab backgrounded), Snowflake queries throw a `RuntimeException`. The user sees an error page and must log out/in to restore the token.
+
+**Current status:** The `Snippet_TriggerSFTokenRefresh` keepalive mitigates this for active users. Background tabs may still lose their token if the browser suspends JS timers.
+
+**Future improvement:** Catch the auth exception in the query microflow and redirect to `/headersso/` for silent re-authentication instead of showing an error.
+
+---
+
+### JDBC connection pooling per user not implemented
+
+Each call to `GetCompoundToken` + `ExecuteQuery` creates a new JDBC connection (via HikariCP). There is no connection reuse across requests for the same user.
+
+**Impact:** Acceptable for low-concurrency POC/demo use. May become a bottleneck with many concurrent users.
+
+**Future improvement:** Investigate user-keyed connection pooling or session-scoped connection caching in the External Database Connector.
+
+---
+
 ## Future Ideas
-
-### Query Snowflake data as the end user (caller's rights)
-
-**What:** Execute Snowflake SQL from the Mendix app using the authenticated end user's identity and role, enabling per-user data access and row-level security.
-
-**How:** Enable `executeAsCaller: true` in the service spec. SPCS injects `Sf-Context-Current-User-Token` per request. Use this token with the Snowflake JDBC driver to open a session as the calling user.
-
-**Two modes of Snowflake access:**
-
-| Mode | Runs as | Use case |
-|------|---------|----------|
-| Service identity (`/snowflake/session/token`) | Service owner role | Shared queries, background jobs |
-| Caller's rights (`Sf-Context-Current-User-Token`) | End user's role | User-scoped dashboards, RLS |
-
-**Open questions:**
-- Can the Mendix Database Connector module use a dynamic token per request?
-- Performance: new JDBC connection per user vs. pooling by user
-- Token validity (default 2 min, max 7 days via `SERVICE_CALLER_TOKEN_VALIDITY_SECS`)
-
----
-
-### Connecting Mendix to Snowflake data (service identity)
-
-**What:** Use the SPCS service token (auto-injected at `/snowflake/session/token`) to query Snowflake tables from within Mendix via JDBC. Simpler than caller's rights; runs as the service owner.
-
-**Use case:** Mendix apps that visualize or manipulate Snowflake data without ETL. The app runs next to the data.
-
-**Open questions:**
-- Can Mendix's Database Connector module connect to Snowflake via JDBC inside an SPCS container?
-- Does the auto-refreshed OAuth token work with the standard Snowflake JDBC driver?
-- Performance implications of mixing Snowflake queries with the app's transactional PG database?
-
----
 
 ### Multi-instance deployment for HA
 
@@ -108,3 +95,15 @@ The egress IPs used to whitelist SPCS on the Snowflake Postgres network policy (
 **When:** If/when the account is upgraded to Business Critical edition.
 
 **How:** `ALTER POSTGRES INSTANCE ENABLE PRIVATELINK`, provision SPCS endpoint via `SYSTEM$PROVISION_PRIVATELINK_ENDPOINT`, use `PRIVATE_HOST_PORT` network rule type.
+
+---
+
+### Service identity JDBC connection
+
+**What:** Use the SPCS service token (auto-injected at `/snowflake/session/token`) to query Snowflake tables from within Mendix via JDBC. Simpler than caller's rights; runs as the service owner role.
+
+**Use case:** Background jobs, scheduled data syncs, or admin dashboards that don't need per-user access control.
+
+**Status:** Not yet implemented. The caller's rights approach (compound token) is the primary path. Service identity could be added as a simpler alternative for scenarios where per-user access isn't needed.
+
+**How:** Read `/snowflake/session/token`, connect via JDBC with `host=$SNOWFLAKE_HOST`, `authenticator=oauth`, `token=<service-token>`. No caller token needed; no user context required.

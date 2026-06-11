@@ -88,28 +88,11 @@ authenticator = "snowflake"
 
 ## Step 2: Build the Mendix PAD Container Image
 
-1. In Studio Pro, create a Portable App Distribution package: App → Create Deployment Package → Portable package
-2. Extract the ZIP to a working directory (e.g., `C:\Projects\mendix-spcs-poc\`)
-3. Create a `Dockerfile`:
+The deploy script (`deploy.ps1`) handles Docker image creation automatically. It generates a Dockerfile and entrypoint script tailored for SPCS, builds the image, and pushes it to the Snowflake registry.
 
-```dockerfile
-FROM eclipse-temurin:21-jdk
-WORKDIR /mendix
-COPY ./app ./app
-COPY ./bin ./bin
-COPY ./etc ./etc
-COPY ./lib ./lib
-ENV MX_LOG_LEVEL=info
-EXPOSE 8080 8090
-CMD ["./bin/start", "etc/Default"]
-```
+You do not need to manually build or manage Docker images. Skip to Step 3 to set up the Snowflake infrastructure, then use the deploy script (Step 7) for all deployments.
 
-4. Build for linux/amd64:
-
-```powershell
-cd C:\Projects\mendix-spcs-poc
-docker build --platform linux/amd64 -t mendix-app:poc .
-```
+For details on what the generated container contains, see the [Container Internals appendix](#appendix-container-internals) at the end of this document.
 
 ---
 
@@ -307,6 +290,9 @@ spec:
   logExporters:
     eventTableConfig:
       logLevel: INFO
+capabilities:
+  securityContext:
+    executeAsCaller: true
 $$;
 ```
 
@@ -314,8 +300,8 @@ $$;
 
 **Key lessons about the service spec:**
 - Stage volume names must be **fully qualified** and start with `@`: use `"@DATABASE.SCHEMA.MENDIX_FILESTORAGE_STAGE"`, not just `"@mendix_filestorage_stage"`. Without full qualification, SPCS cannot resolve the stage.
-- Mendix PAD readiness probe is at `/probes/ready` on port **8090** (admin port), NOT `/health/ready` on 8080. The app also exposes `/probes/alive` and `/probes/started` on the same admin port.
-- **Readiness probe strategy:** The admin port (8090) binds to `localhost` only and is NOT configurable via environment variables in PAD. Instead, use the **app port (8080)** with path `/` for the readiness probe. The app port binds to `0.0.0.0` and is reachable by SPCS.
+- Mendix PAD readiness probe is at `/probes/ready` on port 8090 (admin port). However, the admin port binds to `localhost` only and is not configurable in PAD. Use the **app port (8080)** with path `/` for the SPCS readiness probe instead, since it binds to `0.0.0.0` and is reachable by SPCS.
+- **Readiness probe strategy:** Use port 8080 with path `/` in the service spec (as shown above).
 - **Startup time:** Mendix PAD apps take 2-3 minutes to fully initialize (model sync, license check, task queues, DB schema setup). The readiness probe will fail during this time; this is expected. Don't assume a startup error until you've waited at least 3-4 minutes and checked the logs.
 - You must have an active database context (`USE DATABASE`) when creating a service, even if using fully qualified names.
 - Inline spec (`FROM SPECIFICATION $$...$$`) avoids needing to upload YAML to a stage; useful when stage uploads are blocked by network policies.
@@ -431,6 +417,42 @@ Use `-Config "other-file.json"` to point at a different config (e.g., dev vs pro
 
 **Security note:** `deploy-config.json` contains database passwords. Add it to `.gitignore` and ship a `deploy-config.example.json` with placeholder values instead.
 
+### App Constants
+
+Mendix app constants (defined in Studio Pro) are automatically extracted from the PAD package during deployment. The deploy script:
+
+1. Parses `etc/constants/defaults.conf` and `etc/constants/variables.conf` inside the PAD
+2. Generates (or updates) a `deploy-config-constants.json` file alongside the script
+3. Pre-fills values from PAD defaults; leaves empty strings for constants that need user input
+4. Prompts the user to fill in missing values before proceeding
+5. Creates/updates Snowflake `GENERIC_STRING` SECRET objects (one per constant)
+6. Wires the secrets into the service spec as environment variables
+
+**First deploy with a new constant:**
+
+```
+[2/6] Configuring app constants...
+  Found 6 constant(s) in PAD
+  The following constants need values:
+    - MyFirstModule.Database_DBSource
+    - MyFirstModule.Database_DBUserName
+    - MyFirstModule.Database_DBPassword
+  Edit: C:\...\Deploy Script\deploy-config-constants.json
+  Fill in the values, save the file, then press Enter to continue
+```
+
+Edit the file, fill in values, save, press Enter. The script handles the rest.
+
+**Subsequent deploys:** If `deploy-config-constants.json` already has all values filled, the script proceeds without prompting.
+
+**Adding a new constant in Studio Pro:** Just add it, export a new PAD, and redeploy. The script detects the new constant, adds it to the config file, and prompts for its value.
+
+**Rotating a secret value:** Edit `deploy-config-constants.json` with the new value and redeploy. The script runs `CREATE OR REPLACE SECRET` which updates the value in Snowflake. Note: since secrets are mounted as environment variables (not files), the container must restart for the new value to take effect. The ALTER SERVICE during deploy handles this.
+
+**Naming convention:** Secret objects are created in the same database/schema as the service, named `MX_CONST_<MODULE>_<CONSTANTNAME>` (uppercased, dots replaced by underscores).
+
+**Security note:** `deploy-config-constants.json` contains secret values (PATs, passwords). It is gitignored alongside `deploy-config.json`.
+
 ---
 
 The public endpoint URL contains a hash that is assigned at service creation time. Dropping and recreating the service generates a new hash (new URL). Suspending, resuming, or altering the spec in-place preserves the URL.
@@ -512,6 +534,172 @@ CREATE SERVICE ... ;
 
 ---
 
+## Step 8: Set Up the SnowflakeSSO Module
+
+The SnowflakeSSO module handles automatic user login via Snowflake identity and stores the caller token needed for querying Snowflake data.
+
+**Setup steps in Studio Pro:**
+
+1. **Import the module:** Import `App Components/SnowflakeSSO.mpk` into your project (right-click your project in the App Explorer, Import Module Package)
+2. **Replace the login page:** Copy `App Components/login.html` to your project's `theme/web/` folder, replacing the default login page. This page redirects unauthenticated users through the `/headersso/` endpoint.
+3. **Add the token refresh snippet:** Drag `Snippet_TriggerSFTokenRefresh` from the SnowflakeSSO module into your app's **Main Layout** (the layout that wraps all pages). This keeps the caller token fresh via periodic JS calls.
+4. **Register the SSO handler at startup:** Set `SnowflakeSSO.ASu_RegisterSnowflakeSSO` as your project's After Startup microflow (Project Settings > Runtime > After Startup). If you already have an after-startup microflow, call this one from it as a sub-microflow.
+
+**Security warning:** The `CallerToken` attribute on `SnowflakeSSO.SnowflakeUser` must never be readable by user roles. The module ships with entity access rules that restrict it to system context only. Do not modify these access rules. If the token were exposed to the client, it could be combined with the service token (available inside the container) to impersonate the user.
+
+---
+
+## Querying Snowflake as the End User (Caller's Rights)
+
+The service spec includes `executeAsCaller: true` in the `capabilities` block. This causes SPCS to inject a `Sf-Context-Current-User-Token` header on every ingress request, which represents the logged-in user's identity.
+
+**How it works:**
+
+1. User logs in via `/headersso/` (Snowflake OAuth gate on the SPCS endpoint)
+2. `HeaderSSOHandler` reads `Sf-Context-Current-User-Token` and stores it on the `SnowflakeSSO.SnowflakeUser` entity
+3. A JS keepalive (`Snippet_TriggerSFTokenRefresh`, must be added to your Main Layout) pings `/headersso/refresh` every 20 minutes to keep the token fresh
+4. When a microflow needs to query Snowflake as the user, it calls `GetCompoundToken` which:
+   - Reads the service OAuth token from `/snowflake/session/token` (auto-refreshed by SPCS)
+   - Reads the user's caller token from the entity
+   - Returns the concatenation: `<service-token>.<user-token>`
+5. In the microflow's `ExecuteQuery` action, override username with `$SnowflakeUser/Name` and password with the compound token
+
+**One-time SQL setup (run as ACCOUNTADMIN):**
+
+```sql
+-- Extend caller token validity to 30 minutes (default is 2 min, max 7 days)
+ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_SERVICE
+  SET SERVICE_CALLER_TOKEN_VALIDITY_SECS = 1800;
+
+-- Grant caller grants to the service owner role
+-- These allow the service to perform operations ON BEHALF of the caller
+-- The caller must ALSO have these privileges via their own role
+GRANT CALLER USAGE ON DATABASE <target_db> TO ROLE <service_owner_role>;
+GRANT INHERITED CALLER USAGE ON ALL SCHEMAS IN DATABASE <target_db> TO ROLE <service_owner_role>;
+GRANT INHERITED CALLER SELECT ON ALL TABLES IN DATABASE <target_db> TO ROLE <service_owner_role>;
+GRANT CALLER USAGE ON WAREHOUSE <warehouse> TO ROLE <service_owner_role>;
+
+-- Ensure end users have secondary roles active (for cross-role access)
+ALTER USER <username> SET DEFAULT_SECONDARY_ROLES = ('ALL');
+```
+
+### Understanding Caller Grants
+
+Caller's rights in SPCS uses **restricted caller's rights**: both the user AND the service owner role must be authorized. This is a two-layer permission check:
+
+1. The user's own role must have the privilege (e.g., SELECT on a table)
+2. The service owner role must have a **caller grant** for that same privilege
+
+If either is missing, the query fails with "does not exist or not authorized."
+
+**Why this exists:** It prevents a service from accessing data on behalf of a user that the service developer didn't intend. The service owner explicitly declares which objects the service is allowed to touch.
+
+**Grant patterns by use case:**
+
+```sql
+-- Allow callers to query all tables in a specific schema
+GRANT CALLER USAGE ON DATABASE my_db TO ROLE <service_owner_role>;
+GRANT CALLER USAGE ON SCHEMA my_db.my_schema TO ROLE <service_owner_role>;
+GRANT INHERITED CALLER SELECT ON ALL TABLES IN SCHEMA my_db.my_schema TO ROLE <service_owner_role>;
+
+-- Allow callers to query all tables in an entire database
+GRANT CALLER USAGE ON DATABASE my_db TO ROLE <service_owner_role>;
+GRANT INHERITED CALLER USAGE ON ALL SCHEMAS IN DATABASE my_db TO ROLE <service_owner_role>;
+GRANT INHERITED CALLER SELECT ON ALL TABLES IN DATABASE my_db TO ROLE <service_owner_role>;
+
+-- Allow callers to use a warehouse (required for any query execution)
+GRANT CALLER USAGE ON WAREHOUSE my_wh TO ROLE <service_owner_role>;
+
+-- Allow callers to query views
+GRANT INHERITED CALLER SELECT ON ALL VIEWS IN SCHEMA my_db.my_schema TO ROLE <service_owner_role>;
+```
+
+**Common error:** `Object 'DB.SCHEMA.TABLE' does not exist or not authorized` when the user clearly has access. This means the caller grant is missing on the service owner role. Run the appropriate `GRANT CALLER` / `GRANT INHERITED CALLER` statement.
+
+**The deploy script** includes an optional post-deploy step that offers to run these grants interactively. You can also run them manually at any time.
+
+### JDBC Connection from SPCS
+
+SPCS provides every container with a `SNOWFLAKE_HOST` environment variable containing the internal hostname for connecting to Snowflake. You must use this variable; hardcoding a hostname (including `snowflake.snowflakecomputing.internal`) will not work.
+
+The deploy script handles this automatically through an entrypoint mechanism:
+
+1. The `Database_DBSource` constant in `deploy-config-constants.json` uses a placeholder: `jdbc:snowflake://{SNOWFLAKE_HOST}/?db=<YOUR_DB>&schema=<YOUR_SCHEMA>&warehouse=<YOUR_WH>&authenticator=oauth&JDBC_QUERY_RESULT_FORMAT=JSON`
+2. The Docker image includes an `entrypoint.sh` that scans all `CONSTANTS_*` env vars for `{SNOWFLAKE_HOST}` and replaces it with the actual value from the SPCS-provided environment variable
+3. The Mendix runtime starts after this substitution, so it receives a fully resolved JDBC URL
+
+**What to put in `deploy-config-constants.json`:**
+
+```json
+{
+  "constants": {
+    "MyFirstModule.Database_DBSource": "jdbc:snowflake://{SNOWFLAKE_HOST}/?db=MY_DATABASE&schema=MY_SCHEMA&warehouse=MY_WH&authenticator=oauth&JDBC_QUERY_RESULT_FORMAT=JSON",
+    "MyFirstModule.Database_DBUserName": "OVERRIDE_AT_RUNTIME",
+    "MyFirstModule.Database_DBPassword": "OVERRIDE_AT_RUNTIME"
+  }
+}
+```
+
+The `DBUserName` and `DBPassword` constants should be set to a placeholder value (e.g., `OVERRIDE_AT_RUNTIME`). They are overridden at query time in the microflow, but the deploy script requires all constants to have non-empty values.
+
+### Design-Time vs Runtime Configuration
+
+The External Database Connector requires valid constant values to initialize in Studio Pro. These are different from what runs on SPCS:
+
+| Setting | Studio Pro (local dev) | SPCS (deployed) |
+|---------|----------------------|-----------------|
+| `Database_DBSource` | `jdbc:snowflake://<account>.snowflakecomputing.com/?db=...&warehouse=...` | `jdbc:snowflake://{SNOWFLAKE_HOST}/?...&authenticator=oauth&...` (resolved by entrypoint) |
+| `Database_DBUserName` | Your Snowflake username | Overridden per-request in microflow |
+| `Database_DBPassword` | A PAT or your password | Overridden per-request with compound token |
+| Authenticator | Not needed (defaults to snowflake) | `authenticator=oauth` in the URL |
+
+The deploy script manages the SPCS values via `deploy-config-constants.json`. Your Studio Pro project keeps its own local constant values for development. These two never conflict because the PAD export captures the Studio Pro defaults, but the SPCS secrets override them at runtime.
+
+### Querying Snowflake in a Microflow
+
+At query time, you must override the username and password with the caller's identity. The External Database Connector's `ExecuteQuery` action accepts override parameters.
+
+**Microflow pattern:**
+
+1. Retrieve `SnowflakeSSO.SnowflakeUser` where `id = $currentUser` to get the user object
+2. Call the `GetCompoundToken` Java action. Store the result in a variable (e.g., `$Token`)
+3. In the `ExecuteQuery` action parameters:
+   - **Username override**: `$SnowflakeUser/Name` (the Snowflake username, e.g., `JANE_DOE`)
+   - **Password override**: `$Token` (the compound token)
+   - **SQL**: Your query
+
+Each query executes as the logged-in user with their Snowflake roles and permissions. The compound token (`serviceToken.callerToken`) authenticates via OAuth over the internal Snowflake network; no EAI or external egress is needed.
+
+### Token Refresh Setup (Required)
+
+Add the **`Snippet_TriggerSFTokenRefresh`** snippet from the SnowflakeSSO module to your app's **Main Layout** (the layout used by all pages). This snippet contains a JavaScript action that periodically calls `/headersso/refresh` to update the caller token stored on the user entity.
+
+Without this snippet, the caller token expires after 30 minutes (the `SERVICE_CALLER_TOKEN_VALIDITY_SECS` value). After expiry, all Snowflake queries will fail with authentication errors until the user logs out and back in.
+
+**Token lifecycle:**
+
+| Token | Source | Validity | Refresh mechanism |
+|-------|--------|----------|-------------------|
+| Service token | `/snowflake/session/token` (file, SPCS-managed) | ~1 hour, auto-refreshed every few minutes | Read on demand from disk |
+| Caller token | `Sf-Context-Current-User-Token` header | 30 min (configured above) | JS keepalive every 20 min via `/headersso/refresh` |
+| Compound token | Concatenation of both | Limited by the shorter-lived token | Built on demand by `GetCompoundToken` |
+
+**Security:**
+- Entity access rules on `SnowflakeUser.CallerToken` deny read/write for all user roles; only system context can access it
+- The caller token alone is useless; it requires the service token (container-local file) to form a valid credential
+- The Postgres database is network-isolated (only reachable from the SPCS container)
+- 30-minute expiry limits the blast radius if a token is exposed
+
+**Verifying it works:**
+
+To verify caller's rights is working, use the External Database Connector with the compound token to run:
+```sql
+SELECT CURRENT_USER(), CURRENT_ROLE();
+```
+The result should show the logged-in user's name, not the service user (`MENDIX_SERVICE`).
+
+---
+
 ## Architecture (POC)
 
 ```
@@ -523,8 +711,8 @@ CREATE SERVICE ... ;
 │  │  mendix-app          │──── EAI ──── Snowflake Postgres     │
 │  │  Port 8080 (app)     │             (managed, persistent)   │
 │  │  Port 8090 (admin)   │                                     │
-│  │  Storage: stage vol   │                                     │
-│  └─────────────────────┘                                      │
+│  │  Storage: stage vol   │── internal ── Snowflake            │
+│  └─────────────────────┘   (SNOWFLAKE_HOST, OAuth)            │
 │                                                               │
 │  Endpoint: mendix-web (public, Snowflake auth)                │
 └───────────────────────────────────────────────────────────────┘
@@ -533,3 +721,49 @@ CREATE SERVICE ... ;
 **Notes:**
 - Trial license has user and time limits
 - SPCS egress IP ranges expire periodically; monitor and update the Postgres network rule
+
+---
+
+## Appendix: Container Internals
+
+The deploy script generates two files in the PAD build context before building the Docker image:
+
+### Dockerfile
+
+```dockerfile
+FROM eclipse-temurin:21-jdk
+WORKDIR /mendix
+COPY ./app ./app
+COPY ./bin ./bin
+COPY ./etc ./etc
+COPY ./lib ./lib
+ENV MX_LOG_LEVEL=info
+EXPOSE 8080 8090
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
+CMD ["./entrypoint.sh"]
+```
+
+- Base image: Eclipse Temurin JDK 21 (required by Mendix 10.x/11.x PAD)
+- Copies the four PAD directories (`app`, `bin`, `etc`, `lib`) into the image
+- Port 8080: application web port (used for readiness probe and public endpoint)
+- Port 8090: admin API port (binds to localhost only; not reachable from SPCS probes)
+- Entrypoint: a shell script that resolves placeholders before launching the Mendix runtime
+
+### entrypoint.sh
+
+```bash
+#!/bin/bash
+# Resolve {SNOWFLAKE_HOST} placeholder in any CONSTANTS_* env vars
+for var in $(env | grep '^CONSTANTS_' | cut -d= -f1); do
+    val="${!var}"
+    if [[ "$val" == *"{SNOWFLAKE_HOST}"* ]]; then
+        export "$var"="${val//\{SNOWFLAKE_HOST\}/$SNOWFLAKE_HOST}"
+    fi
+done
+exec ./bin/start etc/Default
+```
+
+This script runs before the Mendix runtime starts. It scans all environment variables prefixed with `CONSTANTS_` (the Mendix constant overrides) and replaces any `{SNOWFLAKE_HOST}` placeholder with the actual value of `$SNOWFLAKE_HOST` (provided automatically by SPCS). This allows the JDBC connection URL to use the correct internal hostname without hardcoding it.
+
+After substitution, it executes the PAD startup script (`./bin/start etc/Default`) which initializes the Mendix runtime.
