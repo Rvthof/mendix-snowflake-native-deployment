@@ -26,7 +26,7 @@ $cleanupPath = $null
 # Load configuration
 # ============================================================
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$configPath = if ([System.IO.Path]::IsPathRooted($Config)) { $Config } else { Join-Path $scriptDir $Config }
+$configPath = if ([System.IO.Path]::IsPathRooted($Config)) { $Config } else { Join-Path (Get-Location) $Config }
 
 if (-not (Test-Path $configPath)) {
     Write-Error "Config file not found: $configPath`nCopy deploy-config.json and fill in your values."
@@ -38,6 +38,7 @@ $cfg = Get-Content $configPath -Raw | ConvertFrom-Json
 # Extract config values
 $SnowConnection = $cfg.snowConnection
 $ServiceName    = $cfg.service.name
+$ComputePool    = $cfg.service.computePool
 $ImageRepo      = $cfg.service.imageRepo
 $ImageName      = $cfg.service.imageName
 $EAI            = $cfg.service.externalAccessIntegration
@@ -57,9 +58,10 @@ $MemLimit       = $cfg.resources.memory.limit
 $CpuRequest     = $cfg.resources.cpu.request
 $CpuLimit       = $cfg.resources.cpu.limit
 
-# Derive database.schema from ServiceName (e.g. "DB.SCHEMA.SERVICE" -> "DB.SCHEMA")
+# Derive database.schema and short name from ServiceName (e.g. "DB.SCHEMA.SERVICE" -> "DB.SCHEMA", "SERVICE")
 $serviceParts = $ServiceName -split '\.'
 $ServiceDbSchema = "$($serviceParts[0]).$($serviceParts[1])"
+$ServiceShortName = $serviceParts[2]
 
 # Derive registry host from snow CLI connection
 Write-Host "Loading registry URL from snow CLI..." -ForegroundColor DarkGray
@@ -244,7 +246,7 @@ if (Test-Path $PadPath -PathType Leaf) {
         exit 1
     }
 
-    Write-Host "[1/6] Extracting PAD package..." -ForegroundColor Cyan
+    Write-Host "[1/7] Extracting PAD package..." -ForegroundColor Cyan
     $ExtractDir = Join-Path $env:TEMP "mendix-pad-build-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     $cleanupPath = $ExtractDir
     Expand-Archive -Path $PadPath -DestinationPath $ExtractDir -Force
@@ -256,7 +258,7 @@ if (Test-Path $PadPath -PathType Leaf) {
         $BuildContext = $ExtractDir
     }
 } elseif (Test-Path $PadPath -PathType Container) {
-    Write-Host "[1/6] Using existing folder (no extraction needed)" -ForegroundColor Cyan
+    Write-Host "[1/7] Using existing folder (no extraction needed)" -ForegroundColor Cyan
     $BuildContext = $PadPath
 } else {
     Write-Error "Path not found: $PadPath"
@@ -272,15 +274,16 @@ if (-not (Test-Path "$BuildContext\bin\start")) {
 # ============================================================
 # Step 2: Configure constants
 # ============================================================
-Write-Host "[2/6] Configuring app constants..." -ForegroundColor Cyan
+Write-Host "[2/7] Configuring app constants..." -ForegroundColor Cyan
 
 $padConstants = Get-PadConstants -BuildContext $BuildContext
 
 if ($padConstants.Count -gt 0) {
     Write-Host "  Found $($padConstants.Count) constant(s) in PAD" -ForegroundColor DarkGray
 
-    # Sync the constants config file
-    $constantsConfigPath = Sync-ConstantsConfig -Constants $padConstants -ConfigDir $scriptDir
+    # Sync the constants config file (in same dir as the deploy config)
+    $configDir = Split-Path -Parent $configPath
+    $constantsConfigPath = Sync-ConstantsConfig -Constants $padConstants -ConfigDir $configDir
 
     # Load values and check for empties
     $constConfig = Get-Content $constantsConfigPath -Raw | ConvertFrom-Json
@@ -333,12 +336,12 @@ if ($padConstants.Count -gt 0) {
 # Step 3: Build Docker image
 # ============================================================
 
-# Create Dockerfile if not present
+# Always (re)generate Dockerfile to ensure latest template
 $DockerfilePath = "$BuildContext\Dockerfile"
-if (-not (Test-Path $DockerfilePath)) {
-    Write-Host "  Creating Dockerfile..." -ForegroundColor DarkGray
-    @"
+Write-Host "  Creating Dockerfile..." -ForegroundColor DarkGray
+@"
 FROM eclipse-temurin:21-jdk
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && rm -rf /var/lib/apt/lists/*
 WORKDIR /mendix
 COPY ./app ./app
 COPY ./bin ./bin
@@ -350,12 +353,10 @@ COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 CMD ["./entrypoint.sh"]
 "@ | Set-Content -Path $DockerfilePath -Encoding UTF8
-}
 
-# Create entrypoint script that resolves {SNOWFLAKE_HOST} placeholder in env vars
+# Always (re)generate entrypoint script with latest template
 $EntrypointPath = "$BuildContext\entrypoint.sh"
-if (-not (Test-Path $EntrypointPath)) {
-    $entrypointContent = @"
+$entrypointContent = @"
 #!/bin/bash
 # Resolve {SNOWFLAKE_HOST} placeholder in any CONSTANTS_* env vars
 for var in `$(env | grep '^CONSTANTS_' | cut -d= -f1); do
@@ -364,13 +365,36 @@ for var in `$(env | grep '^CONSTANTS_' | cut -d= -f1); do
         export "`$var"="`${val//\{SNOWFLAKE_HOST\}/`$SNOWFLAKE_HOST}"
     fi
 done
+
+# Auto-create database if it doesn't exist (multi-app support)
+DBNAME="`$RUNTIME_PARAMS_DATABASENAME"
+DBHOST=`$(echo "`$RUNTIME_PARAMS_DATABASEHOST" | cut -d: -f1)
+DBPORT=`$(echo "`$RUNTIME_PARAMS_DATABASEHOST" | cut -d: -f2)
+DBPORT=`${DBPORT:-5432}
+
+if [ -n "`$DBNAME" ] && [ "`$DBNAME" != "postgres" ]; then
+    export PGPASSWORD="`$RUNTIME_PARAMS_DATABASEPASSWORD"
+    export PGSSLMODE="require"
+    echo "Checking if database '`$DBNAME' exists..."
+    EXISTS=`$(psql -h "`$DBHOST" -p "`$DBPORT" -U "`$RUNTIME_PARAMS_DATABASEUSERNAME" -d postgres \
+      -tAc "SELECT 1 FROM pg_database WHERE datname = '`$DBNAME'" 2>/dev/null)
+    if [ "`$EXISTS" != "1" ]; then
+        echo "Creating database '`$DBNAME'..."
+        psql -h "`$DBHOST" -p "`$DBPORT" -U "`$RUNTIME_PARAMS_DATABASEUSERNAME" -d postgres \
+          -c "CREATE DATABASE \"`$DBNAME\""
+        echo "Database '`$DBNAME' created."
+    else
+        echo "Database '`$DBNAME' already exists."
+    fi
+    unset PGPASSWORD PGSSLMODE
+fi
+
 exec ./bin/start etc/Default
 "@
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($EntrypointPath, $entrypointContent.Replace("`r`n", "`n"), $utf8NoBom)
-}
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($EntrypointPath, $entrypointContent.Replace("`r`n", "`n"), $utf8NoBom)
 
-Write-Host "[3/6] Building Docker image..." -ForegroundColor Cyan
+Write-Host "[3/7] Building Docker image..." -ForegroundColor Cyan
 $tag = "${ImageName}:$(Get-Date -Format 'yyyyMMdd-HHmm')"
 docker build --platform linux/amd64 -t $tag "$BuildContext"
 if ($LASTEXITCODE -ne 0) { Write-Error "Docker build failed" }
@@ -378,17 +402,28 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Docker build failed" }
 # ============================================================
 # Step 4: Push to registry
 # ============================================================
-Write-Host "[4/6] Pushing to Snowflake registry..." -ForegroundColor Cyan
+Write-Host "[4/7] Pushing to Snowflake registry..." -ForegroundColor Cyan
 $fullTag = "$RegistryHost/$ImageRepo/${ImageName}:latest"
 docker tag $tag $fullTag
 docker push $fullTag
 if ($LASTEXITCODE -ne 0) { Write-Error "Docker push failed. Are you logged in? Run: docker login $RegistryHost" }
 
 # ============================================================
-# Step 5: Update service spec
+# Step 5: Ensure infrastructure and deploy service
 # ============================================================
-Write-Host "[5/6] Updating service (ALTER SERVICE FROM SPECIFICATION)..." -ForegroundColor Cyan
 $sslValue = if ($DbSsl) { "true" } else { "false" }
+
+# Ensure file storage stage exists
+Write-Host "[5/7] Ensuring infrastructure..." -ForegroundColor Cyan
+$stageFqn = $FileStage -replace '^@', ''
+$stageSql = "CREATE STAGE IF NOT EXISTS $stageFqn ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');"
+cmd /c "snow sql -q `"$stageSql`" --connection $SnowConnection --format json --enable-templating NONE 2>&1" | Out-Null
+Write-Host "  Stage: $stageFqn (ensured)" -ForegroundColor DarkGray
+
+# Check if service already exists
+$checkSql = "SHOW SERVICES LIKE '$ServiceShortName' IN SCHEMA $ServiceDbSchema;"
+$checkRaw = cmd /c "snow sql -q `"$checkSql`" --connection $SnowConnection --format json --enable-templating NONE 2>&1"
+$serviceExists = ($checkRaw | Out-String) -match "`"$ServiceShortName`""
 
 # Generate secrets YAML block
 $secretsBlock = ""
@@ -396,10 +431,8 @@ if ($padConstants.Count -gt 0) {
     $secretsBlock = Get-SecretsYaml -Constants $padConstants -DbSchema $ServiceDbSchema
 }
 
-# Write SQL to a temp file to avoid PowerShell mangling the $$ dollar-quoting
-$sqlFile = Join-Path $env:TEMP "mendix-alter-service-$(Get-Date -Format 'yyyyMMdd-HHmmss').sql"
-$specSql = @"
-ALTER SERVICE $ServiceName FROM SPECIFICATION `$`$
+# Build the service spec (shared between CREATE and ALTER)
+$specBody = @"
 spec:
   containers:
   - name: mendix-app
@@ -444,30 +477,55 @@ $secretsBlock
 capabilities:
   securityContext:
     executeAsCaller: true
+"@
+
+if ($serviceExists) {
+    Write-Host "[6/7] Updating service (ALTER SERVICE FROM SPECIFICATION)..." -ForegroundColor Cyan
+    $specSql = "ALTER SERVICE $ServiceName FROM SPECIFICATION `$`$`n$specBody`n`$`$;"
+} else {
+    Write-Host "[6/7] Creating service (first deploy)..." -ForegroundColor Cyan
+    $specSql = @"
+CREATE SERVICE $ServiceName
+  IN COMPUTE POOL $ComputePool
+  MIN_INSTANCES = 1
+  MAX_INSTANCES = 1
+  EXTERNAL_ACCESS_INTEGRATIONS = ($EAI)
+  FROM SPECIFICATION `$`$
+$specBody
 `$`$;
 "@
+}
+
+# Write SQL to a temp file to avoid PowerShell mangling the $$ dollar-quoting
+$sqlFile = Join-Path $env:TEMP "mendix-deploy-service-$(Get-Date -Format 'yyyyMMdd-HHmmss').sql"
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($sqlFile, $specSql, $utf8NoBom)
 
 try {
     $output = cmd /c "snow sql -f `"$sqlFile`" --connection $SnowConnection --format json --enable-templating NONE 2>&1"
-    $alterResult = $LASTEXITCODE
+    $deployResult = $LASTEXITCODE
 } finally {
     Remove-Item $sqlFile -Force -ErrorAction SilentlyContinue
 }
 
-if ($alterResult -ne 0) {
-    Write-Host "  ALTER SERVICE failed. Check that your service exists and EAI is attached." -ForegroundColor Red
-    Write-Host "  Attempting suspend/resume as fallback (note: this may not pick up the new image)..." -ForegroundColor DarkYellow
-    snow sql -q "ALTER SERVICE $ServiceName SUSPEND;" --connection $SnowConnection --format json 2>&1 | Out-Null
-    Start-Sleep -Seconds 5
-    snow sql -q "ALTER SERVICE $ServiceName RESUME;" --connection $SnowConnection --format json 2>&1 | Out-Null
+if ($deployResult -ne 0) {
+    if ($serviceExists) {
+        Write-Host "  ALTER SERVICE failed." -ForegroundColor Red
+        Write-Host "  Attempting suspend/resume as fallback (note: this may not pick up the new image)..." -ForegroundColor DarkYellow
+        snow sql -q "ALTER SERVICE $ServiceName SUSPEND;" --connection $SnowConnection --format json 2>&1 | Out-Null
+        Start-Sleep -Seconds 5
+        snow sql -q "ALTER SERVICE $ServiceName RESUME;" --connection $SnowConnection --format json 2>&1 | Out-Null
+    } else {
+        Write-Host "  CREATE SERVICE failed. Output:" -ForegroundColor Red
+        Write-Host "  $output" -ForegroundColor Red
+        Write-Error "Service creation failed. Check compute pool, EAI, and permissions."
+    }
 }
 
 # ============================================================
-# Step 6: Done
+# Step 7: Done
 # ============================================================
-Write-Host "[6/6] Deployed!" -ForegroundColor Green
+Write-Host "[7/7] Deployed!" -ForegroundColor Green
 try {
     $endpointsRaw = snow sql -q "SHOW ENDPOINTS IN SERVICE $ServiceName;" --connection $SnowConnection --format json 2>$null
     $endpointsJson = ($endpointsRaw | Out-String).Trim()

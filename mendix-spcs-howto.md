@@ -92,6 +92,8 @@ The deploy script (`deploy.ps1`) handles Docker image creation automatically. It
 
 You do not need to manually build or manage Docker images. Skip to Step 3 to set up the Snowflake infrastructure, then use the deploy script (Step 7) for all deployments.
 
+> **Before exporting a PAD:** If you want Snowflake SSO and caller's rights (querying Snowflake as the end user), set up the SnowflakeSSO module in your app first. See [Step 8: Set Up the SnowflakeSSO Module](#step-8-set-up-the-snowflakesso-module) for instructions. The module must be in the project before you export the PAD.
+
 For details on what the generated container contains, see the [Container Internals appendix](#appendix-container-internals) at the end of this document.
 
 ---
@@ -138,7 +140,45 @@ CREATE POSTGRES INSTANCE MENDIX_PG
 -- IMPORTANT: Save the credentials shown! They cannot be retrieved again.
 -- Note the 'host' and 'access_roles' from the output.
 
--- 4. Wait for instance to become READY
+-- 3b. Grant CREATEDB to the application user (required for multi-app support)
+-- The Postgres instance is only reachable from SPCS (whitelisted egress IPs).
+-- After the compute pool and EAI are created (steps 4-5 below), run this
+-- one-shot SPCS job to grant the privilege. Replace <PG_HOST> and <ADMIN_PASSWORD>
+-- with the host and snowflake_admin password from the CREATE POSTGRES output.
+--
+-- This is a ONE-TIME setup per Postgres instance. It allows the deploy entrypoint
+-- to auto-create a separate database per app.
+```
+
+After completing steps 4 and 5 (EAI creation), run this job:
+
+```sql
+-- One-time: grant CREATEDB to the application user via SPCS job
+-- (PG is only reachable from within SPCS, not from your local machine)
+CREATE SERVICE YOUR_DB.PUBLIC.PG_SETUP_JOB
+  IN COMPUTE POOL MENDIX_POC_POOL
+  MIN_INSTANCES = 1
+  MAX_INSTANCES = 1
+  EXTERNAL_ACCESS_INTEGRATIONS = (MENDIX_PG_EAI)
+  FROM SPECIFICATION $$
+spec:
+  containers:
+  - name: psql
+    image: /your_db/public/poc_repo/mendix-app:latest
+    command: ["bash", "-c", "apt-get update && apt-get install -y postgresql-client && PGPASSWORD='<ADMIN_PASSWORD>' PGSSLMODE=require psql -h <PG_HOST> -p 5432 -U snowflake_admin -d postgres -c 'ALTER USER application CREATEDB;'"]
+$$;
+
+-- Wait ~30 seconds, then check it worked:
+CALL SYSTEM$GET_SERVICE_LOGS('YOUR_DB.PUBLIC.PG_SETUP_JOB', '0', 'psql', 10);
+-- Should show: ALTER ROLE
+
+-- Clean up:
+DROP SERVICE YOUR_DB.PUBLIC.PG_SETUP_JOB;
+```
+
+> **Note:** If this is your very first deploy (no `mendix-app:latest` image exists yet), do one deploy first with `database.name` set to `"postgres"` (the default database). After that image is in the registry, run this job, then change `database.name` to your app-specific name and redeploy.
+
+```sql
 DESCRIBE POSTGRES INSTANCE MENDIX_PG
   ->> SELECT "property", "value" FROM $1 WHERE "property" IN ('state', 'host');
 
@@ -157,6 +197,7 @@ CREATE EXTERNAL ACCESS INTEGRATION MENDIX_PG_EAI
 - SPCS egress IPs are found via `SYSTEM$GET_SNOWFLAKE_EGRESS_IP_RANGES()`. These have an expiry date; monitor and update the network rule before they expire.
 - The Postgres instance credentials are shown only at creation time. If lost, reset with `ALTER POSTGRES INSTANCE ... RESET ACCESS FOR 'application'`.
 - Mendix uses the `application` role (not `snowflake_admin`) for app-level access.
+- The `application` user needs CREATEDB privilege for multi-app deployments (one-time grant via the SPCS job above).
 - The default database is `postgres`; Mendix auto-creates its schema there.
 - `RUNTIME_PARAMS_DATABASEUSESSL: "true"` is required (Snowflake Postgres mandates TLS).
 - No Business Critical edition needed; this uses IP whitelisting over the public endpoint.
@@ -544,6 +585,7 @@ The SnowflakeSSO module handles automatic user login via Snowflake identity and 
 2. **Replace the login page:** Copy `App Components/login.html` to your project's `theme/web/` folder, replacing the default login page. This page redirects unauthenticated users through the `/headersso/` endpoint.
 3. **Add the token refresh snippet:** Drag `Snippet_TriggerSFTokenRefresh` from the SnowflakeSSO module into your app's **Main Layout** (the layout that wraps all pages). This keeps the caller token fresh via periodic JS calls.
 4. **Register the SSO handler at startup:** Set `SnowflakeSSO.ASu_RegisterSnowflakeSSO` as your project's After Startup microflow (Project Settings > Runtime > After Startup). If you already have an after-startup microflow, call this one from it as a sub-microflow.
+5. **Map the module role:** In Project Security > User Roles, map the `SnowflakeSSO.User` module role to every user role that should be able to log in via Snowflake SSO (typically all of them). Without this mapping, users will authenticate through Snowflake but won't have permission to access the SSO module's entities and microflows.
 
 **Security warning:** The `CallerToken` attribute on `SnowflakeSSO.SnowflakeUser` must never be readable by user roles. The module ships with entity access rules that restrict it to system context only. Do not modify these access rules. If the token were exposed to the client, it could be combined with the service token (available inside the container) to impersonate the user.
 
@@ -721,6 +763,67 @@ The result should show the logged-in user's name, not the service user (`MENDIX_
 **Notes:**
 - Trial license has user and time limits
 - SPCS egress IP ranges expire periodically; monitor and update the Postgres network rule
+
+---
+
+## Deploying Multiple Apps
+
+The deploy script supports running multiple Mendix apps on shared infrastructure. Each app gets its own service, database, file stage, and Docker image, while sharing the compute pool, Postgres instance, EAI, and image registry.
+
+See `multi-app-architecture.md` for the full decision rationale.
+
+### One-Time Setup (Per Postgres Instance)
+
+Grant CREATEDB to the `application` user so the entrypoint script can auto-create databases:
+
+```sql
+-- Connect to MENDIX_PG as the admin user (credentials from CREATE POSTGRES INSTANCE output)
+-- via psql from a whitelisted IP or SPCS container:
+ALTER USER application CREATEDB;
+```
+
+### Deploying a New App
+
+1. **Export PAD** from Studio Pro (App menu > Create Portable App Distribution)
+
+2. **Create a config** in your app's project directory. Copy `deploy-config.example.json` from the Deploy Script folder and customize:
+   - `service.name`: unique service name (e.g., `DB.SCHEMA.MY_APP_SERVICE`)
+   - `service.imageName`: unique image name (e.g., `mendix-my-app`)
+   - `database.name`: unique database name (e.g., `my_app`) -- will be auto-created on first boot
+   - `mendix.fileStorageStage`: unique stage (e.g., `@DB.SCHEMA.MY_APP_FILESTORAGE_STAGE`) -- auto-created by script
+
+3. **Run the deploy script** from your app's project directory:
+
+```powershell
+& "C:\path\to\Deploy Script\deploy.ps1" -PadPath ".\releases\MyApp_portable.zip"
+```
+
+The script will:
+- Create the file storage stage if it doesn't exist
+- Detect that the service doesn't exist and CREATE it (with compute pool, EAI)
+- Build and push the Docker image
+- On first boot, the container entrypoint creates the PG database automatically
+
+4. **Subsequent deploys** of the same app just update the existing service (ALTER SERVICE).
+
+### What Each App Needs (Unique)
+
+| Resource | Naming Pattern | Example |
+|----------|---------------|---------|
+| Service | `DB.SCHEMA.<APP>_SERVICE` | `YOUR_DB.PUBLIC.MANUFACTURING_SERVICE` |
+| Image | `mendix-<app>` | `mendix-manufacturing` |
+| PG Database | `<app_name>` | `manufacturing` |
+| File Stage | `@DB.SCHEMA.<APP>_FILESTORAGE_STAGE` | `@YOUR_DB.PUBLIC.MFG_FILESTORAGE_STAGE` |
+| Config File | `deploy-config.json` (in app's project dir) | per-app |
+
+### What's Shared
+
+| Resource | Name | Notes |
+|----------|------|-------|
+| Compute Pool | `MENDIX_POC_POOL` | All services run here; increase MAX_NODES for more capacity |
+| Postgres Instance | `MENDIX_PG` | One instance, multiple databases |
+| EAI | `MENDIX_PG_EAI` | Shared egress rules (same SPCS IPs) |
+| Image Registry | `db/schema/poc_repo` | Shared repo, different image names |
 
 ---
 
