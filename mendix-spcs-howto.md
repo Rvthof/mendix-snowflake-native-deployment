@@ -457,13 +457,13 @@ docker tag mendix-deploy-controller "$repo/mendix-deploy-controller:latest"
 docker push "$repo/mendix-deploy-controller:latest"
 ```
 
-Then force the controller to pull the new image (SPCS pins the digest at start; `ALTER SERVICE FROM SPECIFICATION` re-resolves `:latest`):
+Then suspend and resume to force SPCS to re-pull `:latest`:
 
 ```powershell
-& snow sql -f Controller/sql/setup.sql --connection mendix
+& snow sql -q "ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_DEPLOY_CONTROLLER SUSPEND; ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_DEPLOY_CONTROLLER RESUME;" --connection mendix
 ```
 
-Or run just the `ALTER SERVICE` portion manually. Wait for `MENDIX_DEPLOY_CONTROLLER` to return to RUNNING before deploying any apps.
+Wait for `MENDIX_DEPLOY_CONTROLLER` to return to RUNNING before deploying any apps.
 
 ---
 
@@ -498,17 +498,15 @@ Repeat for each app service. The compute pool will idle-suspend when all service
 |---------|-------------|
 | `404 Not Found` on CLI login | Add region to account: `<LOCATOR>.<REGION>` (e.g., `xy12345.eu-west-2.aws`) |
 | `snow spcs image-registry login` returns 401 | Connection PAT has a role restriction that limits access. Use a PAT without restriction for Docker operations, or check that `connections.toml` has valid credentials. |
-| `push access denied` after successful login | Snowflake Docker registry tokens are short-lived. Run login and push in the same command (chain with `&&`). |
-| `upload-pad.ps1` returns 504 on trigger-deploy | Old controller image (pre-async fix). Rebuild and push the controller image, then ALTER SERVICE to refresh it. |
+| `push access denied` after successful login | Stale Docker credentials override the fresh token. Run `docker logout <registry>` first, then `snow spcs image-registry login`, then push — all in one session. |
 | Service cycling PENDING → FAILED immediately | Check container logs: `snow sql -q "CALL SYSTEM\$GET_SERVICE_LOGS('<DB>.<SCHEMA>.<APP>_SERVICE', 0, 'mendix-app', 50);"` The most common cause is a missing or wrong secret value. |
-| "PAD not found at /mnt/deploy-stage/..." | Stage has a conflicting path. Check `LIST @MENDIX_DEPLOY_STAGE;` for `current.zip/<filename>` entries. Remove with `REMOVE @stage/path`. Run trigger-deploy again. |
+| Deploy stuck in DEPLOYING / no READY or FAILED | Background task failed and could not update the registry. Check controller logs: `snow sql -q "CALL SYSTEM\$GET_SERVICE_LOGS('<DB>.<SCHEMA>.MENDIX_DEPLOY_CONTROLLER', 0, 'controller', 100);"` |
+| "PAD not found at /mnt/deploy-stage/..." | Only happens if stage was manually manipulated. Check `LIST @MENDIX_DEPLOY_STAGE/apps/<name>/;` — if `current.zip` shows as a directory containing a file, remove both: `REMOVE @MENDIX_DEPLOY_STAGE/apps/<name>/current.zip/<filename>;`. Then run trigger-deploy again. |
 | Service fails after "Extracting PAD..." | psql auth failure in entrypoint (wrong PG password in `<APP>_PG_PASS` secret). Fix: `ALTER SECRET <DB>.<SCHEMA>.<APP>_PG_PASS SET SECRET_STRING = '<actual-pg-password>';` then trigger-deploy again. |
-| `ALTER SERVICE FROM SPECIFICATION` doesn't pick up new image | SPCS pins image SHA at service creation. `ALTER SERVICE FROM SPECIFICATION` re-resolves `:latest` tag. If still old: check that the push succeeded and the new digest is in the repo. |
 | Service RUNNING but app won't load (readiness timeout) | Mendix PAD apps take 3-5 minutes to initialize. Wait before investigating. Check logs for Java stack traces if it's been >10 minutes. |
 | MxAdmin login fails ("incorrect password") | `RUNTIME_ADMINUSER_PASSWORD` was not set. Supplied via the `admin_password` field in the app config JSON. |
 | "Object does not exist or not authorized" on Snowflake query | Caller grant missing. Run `GRANT INHERITED CALLER SELECT ON ALL TABLES IN ...` for the target database. |
 | Readiness probe failing permanently on port 8090 | Admin port binds to `localhost` and is unreachable by SPCS. Use port 8080 with path `/` — that's what the controller-generated spec does. |
-| `snow stage copy` creates `current.zip/<filename>` instead of overwriting | Happens when `current.zip` already exists as a file in the stage. The CLI treats it as a directory on subsequent runs. Fix: `REMOVE @stage/apps/<name>/current.zip/<filename>;` then re-upload. |
 | Controller API returns 401 | PAT expired or wrong. The `controllerPat` in `controller-config.json` has a 90-day default expiry. Generate a new one and update the config. |
 | New constant missing (422 on trigger-deploy) | PAD introduced a constant without a default and without a stored value. The error body lists the missing constant names. Register the values via `PUT /apps/{name}/constants` then retry. |
 
