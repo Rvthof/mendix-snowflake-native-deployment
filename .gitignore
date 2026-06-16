@@ -1,6 +1,3 @@
-deploy-config.json
-deploy-config-constants.json
-Deploy Script/deploy-config.json
-Deploy Script/deploy-config-constants.json
+Controller/controller-config.json
 service_spec.yaml
 .snowflake
