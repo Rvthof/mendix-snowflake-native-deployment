@@ -20,6 +20,7 @@
 -- 1. Controller role
 -- -------------------------------------------------------------
 CREATE ROLE IF NOT EXISTS MENDIX_DEPLOY_CONTROLLER_ROLE;
+-- Hardening: replace ACCOUNTADMIN with a dedicated CI/CD service account role before production use.
 GRANT ROLE MENDIX_DEPLOY_CONTROLLER_ROLE TO ROLE ACCOUNTADMIN;
 
 GRANT USAGE            ON COMPUTE POOL <POOL>                   TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
