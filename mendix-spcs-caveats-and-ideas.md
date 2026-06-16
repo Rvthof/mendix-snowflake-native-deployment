@@ -34,11 +34,11 @@ Without a production license, the Mendix runtime terminates after ~2 hours. SPCS
 
 ### SPCS egress IP ranges have an expiry date
 
-The egress IPs used to whitelist SPCS on the Snowflake Postgres network policy (`SYSTEM$GET_SNOWFLAKE_EGRESS_IP_RANGES()`) have an `expires` field. Current expiry: **2026-09-07**.
+The egress IPs used to whitelist SPCS on the Snowflake Postgres network policy (`SYSTEM$GET_SNOWFLAKE_EGRESS_IP_RANGES()`) have an `expires` field. Current expiry: **2026-09-07** (roughly 3 months away).
 
 **Impact:** If IPs rotate and the network rule isn't updated, the Mendix app loses database connectivity.
 
-**Action needed:** Monitor before expiry. Re-run `SYSTEM$GET_SNOWFLAKE_EGRESS_IP_RANGES()` and update the `SPCS_TO_PG_INGRESS` network rule with new CIDRs.
+**Action needed:** Before 2026-09-07, re-run `SYSTEM$GET_SNOWFLAKE_EGRESS_IP_RANGES()` and update the `SPCS_TO_PG_INGRESS` network rule with the new CIDRs.
 
 ---
 
@@ -59,6 +59,32 @@ Each call to `GetCompoundToken` + `ExecuteQuery` creates a new JDBC connection (
 **Impact:** Acceptable for low-concurrency POC/demo use. May become a bottleneck with many concurrent users.
 
 **Future improvement:** Investigate user-keyed connection pooling or session-scoped connection caching in the External Database Connector.
+
+---
+
+### Deploy and constants update pick up whatever `:latest` resolves to
+
+`ALTER SERVICE FROM SPECIFICATION` re-resolves the image tag at call time. Any deploy or constants update can silently pull a new `mendix-base` version if one was pushed to the registry since the last deploy.
+
+**Impact:** In a shared registry, a base image push mid-deploy can produce different runtime behaviour than the previous deploy with no visible signal.
+
+**Mitigation:** Pin the image digest in the spec (`image: /repo/mendix-base@sha256:<digest>`) and update it explicitly when the base image changes. Not yet implemented — currently all specs use `:latest`.
+
+---
+
+### Controller PAT has a 90-day expiry
+
+The `controllerPat` in `controller-config.json` is generated with `DAYS_TO_EXPIRY = 90`. When it expires, `upload-pad.ps1` starts returning 401 and all deploys fail.
+
+**Action needed:** Track the expiry date and regenerate before it lapses:
+
+```sql
+ALTER USER <you> ADD PROGRAMMATIC ACCESS TOKEN mendix_deploy_controller_pat
+  ROLE_RESTRICTION = 'MENDIX_DEPLOY_CONTROLLER_ROLE'
+  DAYS_TO_EXPIRY = 90;
+```
+
+Update `controllerPat` in `controller-config.json` with the new token value.
 
 ---
 
