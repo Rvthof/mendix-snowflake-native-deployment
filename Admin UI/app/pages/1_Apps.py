@@ -29,13 +29,10 @@ def _load_apps() -> list[dict]:
     return client().list_apps()
 
 
-col_refresh, col_auto = st.columns([1, 4])
-with col_refresh:
-    if st.button("Refresh", use_container_width=True):
-        _refresh_now()
-        st.rerun()
-with col_auto:
-    auto = st.toggle("Auto-refresh while operations are running", value=True)
+if st.button("Refresh"):
+    _refresh_now()
+    st.rerun()
+st.caption("Status is fetched on page load and after each action. Click Refresh to re-poll.")
 
 try:
     apps = _load_apps()
@@ -80,7 +77,7 @@ app = next(a for a in apps if a["name"] == selected_name)
 st.divider()
 
 
-@st.fragment(run_every=5 if auto else None)
+@st.fragment
 def _detail_panel() -> None:
     try:
         live = client().get_app(selected_name)
