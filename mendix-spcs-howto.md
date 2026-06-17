@@ -443,7 +443,7 @@ The `entrypoint.sh` replaces `{SNOWFLAKE_HOST}` before the Mendix runtime starts
 
 ## Updating the Controller
 
-When controller code changes (changes to `Controller/app/`), rebuild and push the controller image, then force an image refresh:
+When controller code changes (changes to `Controller/app/`), rebuild and push the controller image, then refresh the running service:
 
 ```powershell
 cd Controller
@@ -455,13 +455,14 @@ $repo = "$registry/<database>/<schema>/<image_repo>"
 docker build -t mendix-deploy-controller .
 docker tag mendix-deploy-controller "$repo/mendix-deploy-controller:latest"
 docker push "$repo/mendix-deploy-controller:latest"
+
+# Refresh the running service to pick up the new :latest:
+.\update.ps1
 ```
 
-Then suspend and resume to force SPCS to re-pull `:latest`:
+`update.ps1` runs `ALTER SERVICE ... FROM SPECIFICATION`, which re-resolves the `:latest` tag and pins the new sha256 digest. The script polls until the service is RUNNING with the refreshed digest.
 
-```powershell
-& snow sql -q "ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_DEPLOY_CONTROLLER SUSPEND; ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_DEPLOY_CONTROLLER RESUME;" --connection mendix
-```
+> **Important:** `ALTER SERVICE SUSPEND` + `RESUME` does NOT re-pull `:latest`. SPCS pins the image to a sha256 digest in the resolved spec at CREATE / ALTER time and keeps that digest across SUSPEND/RESUME. Only `ALTER SERVICE FROM SPECIFICATION` re-resolves the tag.
 
 Wait for `MENDIX_DEPLOY_CONTROLLER` to return to RUNNING before deploying any apps.
 
@@ -500,13 +501,15 @@ Open the printed URL in a browser, authenticate with Snowflake credentials, and 
 - The admin UI calls the controller at `http://mendix-deploy-controller:8080` over the internal SPCS DNS. No PAT is involved on this internal path; Snowflake enforces service-to-service access via the owner role of both services.
 - The admin UI forwards the operator's Snowflake username to the controller as an `X-Operator` header on every mutating request. The controller logs it for audit.
 - `MIN_INSTANCES = MAX_INSTANCES = 1` because SPCS does not provide session affinity and Streamlit holds per-session state in process memory.
-- The admin UI's image must be rebuilt when its code changes:
+- The admin UI's image must be rebuilt and re-pinned when its code changes:
 
 ```powershell
 cd "Admin UI"
 .\build-and-push.ps1
-& snow sql -q "ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_DEPLOY_ADMIN_UI SUSPEND; ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_DEPLOY_ADMIN_UI RESUME;" --connection mendix
+.\update.ps1
 ```
+
+  `update.ps1` runs `ALTER SERVICE ... FROM SPECIFICATION` so SPCS re-resolves `:latest`. See the warning under "Updating the Controller" for why SUSPEND/RESUME isn't enough.
 
 ---
 
