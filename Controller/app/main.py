@@ -11,7 +11,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 import yaml
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from . import registry, snowflake_client as sf
@@ -28,6 +28,14 @@ from .models import (
 from .pad_parser import PadConstant, parse_from_zip
 
 app = FastAPI(title="Mendix SPCS Deployment Controller")
+
+
+@app.middleware("http")
+async def log_operator(request: Request, call_next):
+    if request.method in ("POST", "PUT", "DELETE"):
+        operator = request.headers.get("X-Operator", "<anonymous>")
+        logger.info("operator=%s %s %s", operator, request.method, request.url.path)
+    return await call_next(request)
 
 DB_SCHEMA = os.environ["DB_SCHEMA"]
 COMPUTE_POOL = os.environ["COMPUTE_POOL"]
@@ -255,6 +263,15 @@ def get_app(name: str):
     return AppStatusResponse(app=record, service_status=svc_status)
 
 
+@app.get("/apps/{name}/logs")
+def get_logs(name: str, lines: int = 200):
+    record = registry.get_app(name)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"App '{name}' not found")
+    logs = sf.get_service_logs(record.service_name, lines=lines)
+    return {"logs": logs}
+
+
 def _prepare_deploy(
     name: str, pad_path: str
 ) -> tuple[AppRecord, list[PadConstant], dict]:
@@ -389,6 +406,56 @@ def update_constants(name: str, req: UpdateConstantsRequest, background_tasks: B
     registry.update_app(name, {"last_deploy_status": "DEPLOYING"})
     background_tasks.add_task(_run_update_constants, name, record.service_name, merged, record, _constants_from_dict(merged))
     return {"status": "DEPLOYING"}
+
+
+def _run_suspend(name: str, service_name: str) -> None:
+    try:
+        sf.suspend_service(service_name)
+        if not _poll_status(service_name, "SUSPENDED", timeout_secs=120):
+            registry.update_app(name, {"last_deploy_status": "FAILED"})
+            return
+        registry.update_app(name, {"last_deploy_status": "SUSPENDED"})
+    except Exception:
+        try:
+            registry.update_app(name, {"last_deploy_status": "FAILED"})
+        except Exception:
+            pass
+        logger.exception("Suspend failed for %s", name)
+
+
+def _run_resume(name: str, service_name: str) -> None:
+    try:
+        sf.resume_service(service_name)
+        if not _poll_status(service_name, "RUNNING", timeout_secs=300):
+            registry.update_app(name, {"last_deploy_status": "FAILED"})
+            return
+        registry.update_app(name, {"last_deploy_status": "READY"})
+    except Exception:
+        try:
+            registry.update_app(name, {"last_deploy_status": "FAILED"})
+        except Exception:
+            pass
+        logger.exception("Resume failed for %s", name)
+
+
+@app.post("/apps/{name}/suspend", status_code=202)
+def suspend_app(name: str, background_tasks: BackgroundTasks):
+    record = registry.get_app(name)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"App '{name}' not found")
+    registry.update_app(name, {"last_deploy_status": "SUSPENDING"})
+    background_tasks.add_task(_run_suspend, name, record.service_name)
+    return {"status": "SUSPENDING"}
+
+
+@app.post("/apps/{name}/resume", status_code=202)
+def resume_app(name: str, background_tasks: BackgroundTasks):
+    record = registry.get_app(name)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"App '{name}' not found")
+    registry.update_app(name, {"last_deploy_status": "RESUMING"})
+    background_tasks.add_task(_run_resume, name, record.service_name)
+    return {"status": "RESUMING"}
 
 
 @app.delete("/apps/{name}", status_code=status.HTTP_204_NO_CONTENT)

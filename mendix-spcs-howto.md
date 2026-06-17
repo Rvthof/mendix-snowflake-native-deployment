@@ -467,6 +467,49 @@ Wait for `MENDIX_DEPLOY_CONTROLLER` to return to RUNNING before deploying any ap
 
 ---
 
+## Admin UI (Optional)
+
+A Streamlit-based admin UI is available under `Admin UI/`. It runs as a sibling SPCS service in the same compute pool, calls the controller over the internal SPCS network, and lets operators manage apps from a browser instead of from PowerShell. PAD uploads still go through `upload-pad.ps1`; the admin UI handles status, redeploys from an existing stage path, constants edits, suspend/resume, logs, and delete.
+
+### One-Time Setup
+
+```powershell
+cd "Admin UI"
+
+# Copy the example config, fill in connection / db / schema / pool / warehouse / imageRepo:
+Copy-Item admin-ui-config.example.json admin-ui-config.json
+notepad admin-ui-config.json
+
+# Build and push the image:
+.\build-and-push.ps1
+
+# Provision the service + operator role:
+.\setup.ps1
+```
+
+`setup.ps1` prints the endpoint URL when it's ready and creates `MENDIX_ADMIN_OPERATOR_ROLE`. Grant it to humans who should access the UI:
+
+```sql
+GRANT ROLE MENDIX_ADMIN_OPERATOR_ROLE TO USER <username>;
+```
+
+Open the printed URL in a browser, authenticate with Snowflake credentials, and the apps registered with the controller appear in the Apps page.
+
+### Internals
+
+- The admin UI calls the controller at `http://mendix-deploy-controller:8080` over the internal SPCS DNS. No PAT is involved on this internal path; Snowflake enforces service-to-service access via the owner role of both services.
+- The admin UI forwards the operator's Snowflake username to the controller as an `X-Operator` header on every mutating request. The controller logs it for audit.
+- `MIN_INSTANCES = MAX_INSTANCES = 1` because SPCS does not provide session affinity and Streamlit holds per-session state in process memory.
+- The admin UI's image must be rebuilt when its code changes:
+
+```powershell
+cd "Admin UI"
+.\build-and-push.ps1
+& snow sql -q "ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_DEPLOY_ADMIN_UI SUSPEND; ALTER SERVICE <DATABASE>.<SCHEMA>.MENDIX_DEPLOY_ADMIN_UI RESUME;" --connection mendix
+```
+
+---
+
 ## Scheduled Suspend / Resume (Optional)
 
 SPCS services with public endpoints do not auto-suspend. For POC environments:

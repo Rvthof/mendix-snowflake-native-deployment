@@ -1,3 +1,5 @@
 Controller/controller-config.json
+Admin UI/admin-ui-config.json
 service_spec.yaml
 .snowflake
+__pycache__/

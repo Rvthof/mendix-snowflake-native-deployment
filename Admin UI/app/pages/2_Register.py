@@ -1,0 +1,95 @@
+"""Register page: create a new app via POST /apps."""
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+import streamlit as st
+
+from auth import client
+from controller_client import ControllerError
+
+st.set_page_config(page_title="Register", layout="centered")
+st.title("Register a new app")
+
+st.caption(
+    "Creates the SPCS service, filestorage stage, and PG/admin secrets. "
+    "Upload the PAD afterward via `upload-pad.ps1` or the redeploy action on the Apps page."
+)
+
+_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+with st.form("register"):
+    name = st.text_input(
+        "App name",
+        help="Letters, digits, underscores. Must start with a letter.",
+    )
+    pg_database = st.text_input(
+        "Postgres database name",
+        help="Database is auto-created at first start if it does not exist.",
+    )
+    admin_password = st.text_input(
+        "MxAdmin password",
+        type="password",
+        help="Stored as a Snowflake secret and mounted into the service.",
+    )
+    resource_tier = st.selectbox(
+        "Resource tier",
+        options=["small", "medium", "large"],
+        index=1,
+    )
+    use_caller_rights = st.checkbox(
+        "Enable caller's rights",
+        value=False,
+        help="Sets executeAsCaller=true so the service receives the operator's "
+             "OAuth token on each request.",
+    )
+    constants_text = st.text_area(
+        "Constants (JSON object, optional)",
+        value="{}",
+        help='e.g. { "Module.Setting": "value" }',
+        height=150,
+    )
+    submitted = st.form_submit_button("Register", type="primary")
+
+if submitted:
+    errors: list[str] = []
+    if not _NAME_RE.match(name or ""):
+        errors.append("App name must match `^[A-Za-z][A-Za-z0-9_]*$`.")
+    if not pg_database:
+        errors.append("Postgres database name is required.")
+    if not admin_password:
+        errors.append("MxAdmin password is required.")
+    constants: dict = {}
+    try:
+        parsed = json.loads(constants_text or "{}")
+        if not isinstance(parsed, dict):
+            errors.append("Constants must be a JSON object.")
+        else:
+            constants = parsed
+    except json.JSONDecodeError as e:
+        errors.append(f"Constants JSON is invalid: {e}")
+
+    if errors:
+        for e in errors:
+            st.error(e)
+    else:
+        payload = {
+            "name": name,
+            "pg_database": pg_database,
+            "admin_password": admin_password,
+            "resource_tier": resource_tier,
+            "use_caller_rights": use_caller_rights,
+            "constants": constants,
+        }
+        try:
+            result = client().create_app(payload)
+            st.cache_data.clear()
+            st.success(f"Registered. Service `{result.get('service_name')}` is starting.")
+            st.page_link("pages/1_Apps.py", label="Go to Apps", icon=":material/arrow_forward:")
+        except ControllerError as e:
+            st.error(str(e))

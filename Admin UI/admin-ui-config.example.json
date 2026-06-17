@@ -1,0 +1,17 @@
+{
+  "snowConnection": "<snow-cli-connection-name>",
+
+  "snowflake": {
+    "database": "<SNOWFLAKE_DATABASE>",
+    "schema": "<SNOWFLAKE_SCHEMA>",
+    "computePool": "<COMPUTE_POOL_NAME>",
+    "warehouse": "<WAREHOUSE_NAME>",
+    "imageRepo": "<database>/<schema>/<repo-name>",
+    "controllerService": "MENDIX_DEPLOY_CONTROLLER",
+    "controllerPort": 8080
+  },
+
+  "access": {
+    "operatorRole": "MENDIX_ADMIN_OPERATOR_ROLE"
+  }
+}
