@@ -13,6 +13,7 @@ import streamlit as st
 
 from auth import client
 from controller_client import ControllerError
+from data import list_apps
 
 st.set_page_config(page_title="Apps", layout="wide")
 st.title("Apps")
@@ -22,11 +23,6 @@ _TRANSIENT = {"DEPLOYING", "SUSPENDING", "RESUMING", "STARTING"}
 
 def _refresh_now() -> None:
     st.cache_data.clear()
-
-
-@st.cache_data(ttl=5)
-def _load_apps() -> list[dict]:
-    return client().list_apps()
 
 
 def _diff_constants(old: dict, new: dict) -> list[str]:
@@ -78,7 +74,7 @@ if st.button("Refresh"):
 st.caption("Status is fetched on page load and after each action. Click Refresh to re-poll.")
 
 try:
-    apps = _load_apps()
+    apps = list_apps()
 except ControllerError as e:
     st.error(f"Failed to load apps: {e}")
     st.stop()

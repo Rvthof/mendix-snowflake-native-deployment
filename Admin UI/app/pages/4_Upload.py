@@ -10,6 +10,7 @@ import streamlit as st
 
 from auth import client
 from controller_client import ControllerError
+from data import list_apps
 
 st.set_page_config(page_title="Upload PAD", layout="centered")
 st.title("Upload PAD")
@@ -21,7 +22,7 @@ st.caption(
 )
 
 try:
-    apps = client().list_apps()
+    apps = list_apps()
 except ControllerError as e:
     st.error(f"Failed to load apps: {e}")
     st.stop()

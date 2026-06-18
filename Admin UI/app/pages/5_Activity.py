@@ -10,6 +10,7 @@ import streamlit as st
 
 from auth import client
 from controller_client import ControllerError
+from data import list_apps
 
 st.set_page_config(page_title="Activity", layout="wide")
 st.title("Activity")
@@ -19,7 +20,7 @@ st.caption(
 )
 
 try:
-    apps = client().list_apps()
+    apps = list_apps()
 except ControllerError as e:
     st.error(f"Failed to load apps for filter: {e}")
     apps = []
