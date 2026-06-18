@@ -8,4 +8,6 @@ CMD ["streamlit", "run", "app/streamlit_app.py", \
      "--server.address=0.0.0.0", \
      "--server.port=8501", \
      "--server.headless=true", \
+     "--server.enableXsrfProtection=false", \
+     "--server.enableCORS=false", \
      "--browser.gatherUsageStats=false"]
