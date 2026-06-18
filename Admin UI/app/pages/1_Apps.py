@@ -29,6 +29,49 @@ def _load_apps() -> list[dict]:
     return client().list_apps()
 
 
+def _diff_constants(old: dict, new: dict) -> list[str]:
+    """Unified-diff-style lines for changed / added / removed constants."""
+    lines: list[str] = []
+    for k in sorted(set(old) | set(new)):
+        if k not in new:
+            lines.append(f"- {k}: {json.dumps(old[k])}")
+        elif k not in old:
+            lines.append(f"+ {k}: {json.dumps(new[k])}")
+        elif old[k] != new[k]:
+            lines.append(f"- {k}: {json.dumps(old[k])}")
+            lines.append(f"+ {k}: {json.dumps(new[k])}")
+    return lines
+
+
+def _render_bulk_result(last: dict) -> None:
+    results = last["results"]
+    n_ok = sum(1 for r in results if r["result"] == "OK")
+    n_fail = len(results) - n_ok
+    label = f"Last bulk {last['action']}: {n_ok} succeeded, {n_fail} failed."
+    if n_fail == 0:
+        st.success(label + " Click Refresh above to update statuses.")
+    else:
+        st.error(label)
+    with st.expander("Details"):
+        st.dataframe(results, use_container_width=True, hide_index=True)
+
+
+def _run_bulk(names: list[str], action: str, fn) -> None:
+    progress = st.progress(0.0, text=f"{action} 0/{len(names)}")
+    results: list[dict] = []
+    for i, n in enumerate(names):
+        try:
+            fn(n)
+            results.append({"app": n, "result": "OK", "error": ""})
+        except ControllerError as e:
+            results.append({"app": n, "result": "FAILED", "error": str(e)})
+        except Exception as e:
+            results.append({"app": n, "result": "FAILED", "error": str(e)})
+        progress.progress((i + 1) / len(names), text=f"{action} {i+1}/{len(names)}")
+    _refresh_now()
+    st.session_state["bulk-last-result"] = {"action": action, "results": results}
+
+
 if st.button("Refresh"):
     _refresh_now()
     st.rerun()
@@ -59,26 +102,19 @@ selection = st.dataframe(
     table_rows,
     use_container_width=True,
     hide_index=True,
-    selection_mode="single-row",
+    selection_mode="multi-row",
     on_select="rerun",
     column_config={
         "endpoint_url": st.column_config.LinkColumn("endpoint_url"),
     },
+    key="apps-dataframe",
 )
 
 selected_rows = selection.selection.rows if selection and selection.selection else []
-if not selected_rows:
-    st.caption("Select a row to see details and actions.")
-    st.stop()
-
-selected_name = table_rows[selected_rows[0]]["name"]
-app = next(a for a in apps if a["name"] == selected_name)
-
-st.divider()
 
 
 @st.fragment
-def _detail_panel() -> None:
+def _detail_panel(selected_name: str) -> None:
     try:
         live = client().get_app(selected_name)
     except ControllerError as e:
@@ -154,24 +190,116 @@ def _detail_panel() -> None:
         edited = st.text_area(
             "Constants (JSON object: name -> value)",
             value=json.dumps(current, indent=2),
-            height=300,
+            height=250,
             key=f"constants-{selected_name}",
         )
+
+        parsed: dict | None = None
+        parse_error: str | None = None
+        try:
+            candidate = json.loads(edited)
+            if isinstance(candidate, dict):
+                parsed = candidate
+            else:
+                parse_error = "Constants must be a JSON object."
+        except json.JSONDecodeError as e:
+            parse_error = f"Invalid JSON: {e}"
+
+        diff_lines: list[str] = []
+        if parse_error:
+            st.error(parse_error)
+        elif parsed is not None:
+            diff_lines = _diff_constants(current, parsed)
+            if diff_lines:
+                st.caption("Pending changes:")
+                st.code("\n".join(diff_lines), language="diff")
+            else:
+                st.caption("No changes to apply.")
+
+        save_disabled = (
+            deploy_status in _TRANSIENT
+            or parsed is None
+            or not diff_lines
+        )
         if st.button("Save constants", key=f"save-constants-{selected_name}",
-                     disabled=deploy_status in _TRANSIENT):
+                     disabled=save_disabled):
             try:
-                parsed = json.loads(edited)
-                if not isinstance(parsed, dict):
-                    st.error("Constants must be a JSON object.")
-                else:
-                    client().update_constants(selected_name, parsed)
-                    _refresh_now()
-                    st.success("Constants update triggered. Service will restart.")
-                    st.rerun()
-            except json.JSONDecodeError as e:
-                st.error(f"Invalid JSON: {e}")
+                client().update_constants(selected_name, parsed)
+                _refresh_now()
+                st.success("Constants update triggered. Service will restart.")
+                st.rerun()
             except ControllerError as e:
                 st.error(str(e))
 
 
-_detail_panel()
+@st.fragment
+def _bulk_panel(names: list[str]) -> None:
+    selected_apps = [a for a in apps if a["name"] in names]
+    st.subheader(f"Bulk actions — {len(names)} apps selected")
+    st.write("Selected: " + ", ".join(f"`{n}`" for n in names))
+
+    action_cols = st.columns(3)
+
+    with action_cols[0]:
+        with st.popover(f"Suspend ({len(names)})", use_container_width=True):
+            st.warning(
+                f"These {len(names)} services will be suspended. "
+                "Their endpoints will become unreachable until resumed."
+            )
+            for a in selected_apps:
+                ep = a.get("endpoint_url") or "(none)"
+                st.write(f"- `{a['name']}` → {ep}")
+            if st.button("Confirm suspend", key="bulk-suspend-go", type="primary"):
+                _run_bulk(names, "suspend", lambda n: client().suspend(n))
+                st.rerun()
+
+    with action_cols[1]:
+        with st.popover(f"Resume ({len(names)})", use_container_width=True):
+            st.info(f"These {len(names)} services will be resumed.")
+            for a in selected_apps:
+                st.write(f"- `{a['name']}`")
+            if st.button("Confirm resume", key="bulk-resume-go", type="primary"):
+                _run_bulk(names, "resume", lambda n: client().resume(n))
+                st.rerun()
+
+    with action_cols[2]:
+        with st.popover(f"Delete ({len(names)})", use_container_width=True):
+            st.warning(
+                f"These {len(names)} services will be DROPPED and removed "
+                "from the registry. PG databases and stages are NOT deleted."
+            )
+            for a in selected_apps:
+                st.write(f"- `{a['name']}` (service: `{a['service_name']}`)")
+            expected = f"delete {len(names)}"
+            confirm_text = st.text_input(
+                f"Type `{expected}` to confirm:",
+                key="bulk-delete-confirm-text",
+            )
+            if st.button("Delete permanently", key="bulk-delete-go",
+                         type="primary",
+                         disabled=(confirm_text != expected)):
+                _run_bulk(names, "delete", lambda n: client().delete_app(n))
+                st.rerun()
+
+    last_result = st.session_state.get("bulk-last-result")
+    if last_result:
+        _render_bulk_result(last_result)
+
+
+if not selected_rows:
+    st.caption(
+        "Select one row for a detail panel. Select two or more for bulk actions."
+    )
+    last_result = st.session_state.get("bulk-last-result")
+    if last_result:
+        _render_bulk_result(last_result)
+    st.stop()
+
+st.divider()
+
+if len(selected_rows) == 1:
+    selected_name = table_rows[selected_rows[0]]["name"]
+    _detail_panel(selected_name)
+else:
+    selected_names = [table_rows[i]["name"] for i in selected_rows]
+    _bulk_panel(selected_names)
