@@ -7,8 +7,10 @@
 # Prerequisites:
 #   - Controller already deployed (Controller/setup.ps1 has been run)
 #   - Admin UI image built and pushed (.\build-and-push.ps1)
-#   - Connection's default role can CREATE SERVICE in the schema (ACCOUNTADMIN
-#     in the default setup so the admin UI shares ownership with the controller)
+#   - ACCOUNTADMIN on the account, and the connection can USE ROLE (NOT a
+#     role-restricted PAT). The service is created under a dedicated minimal
+#     owner role ($uiRole) so its owner-rights session is not ACCOUNTADMIN;
+#     ownership is fixed at creation and cannot be transferred afterward.
 
 param(
     [string]$Config = "admin-ui-config.json"
@@ -36,6 +38,8 @@ $repo     = $cfg.snowflake.imageRepo
 $ctrlSvc  = $cfg.snowflake.controllerService
 $ctrlPort = $cfg.snowflake.controllerPort
 $opRole   = $cfg.access.operatorRole
+$uiRole   = if ($cfg.access.adminUiRole) { $cfg.access.adminUiRole } else { "MENDIX_ADMIN_UI_ROLE" }
+$ctrlRole = if ($cfg.access.controllerRole) { $cfg.access.controllerRole } else { "MENDIX_DEPLOY_CONTROLLER_ROLE" }
 
 # Snowflake internal DNS: service name lowercased, underscores replaced with dashes.
 $ctrlDns       = ($ctrlSvc.ToLower() -replace "_", "-")
@@ -55,13 +59,27 @@ function Run-Sql {
     }
 }
 
-# ---- step 1: operator role ----------------------------------------------------
+# ---- step 1: operator role + admin UI owner role ------------------------------
 
-Write-Host "[1/3] Operator role..." -ForegroundColor Cyan
+Write-Host "[1/3] Roles..." -ForegroundColor Cyan
 
+# $opRole : human operators who may open the admin UI (endpoint access).
+# $uiRole : owns the admin UI SERVICE, so its owner-rights session is this minimal
+#           role, not ACCOUNTADMIN. The admin UI runs no owner-rights SQL (only
+#           caller-rights CURRENT_AVAILABLE_ROLES), so the role needs only enough to
+#           create and run the service. Granted (not used) as ACCOUNTADMIN here.
 Run-Sql @"
 CREATE ROLE IF NOT EXISTS $opRole;
-"@ -Label "create $opRole"
+CREATE ROLE IF NOT EXISTS $uiRole;
+GRANT ROLE $uiRole TO ROLE ACCOUNTADMIN;
+GRANT USAGE ON DATABASE       $db                  TO ROLE $uiRole;
+GRANT USAGE ON SCHEMA         $dbSchema            TO ROLE $uiRole;
+GRANT USAGE ON WAREHOUSE      $wh                  TO ROLE $uiRole;
+GRANT USAGE ON COMPUTE POOL   $pool                TO ROLE $uiRole;
+GRANT READ  ON IMAGE REPOSITORY $dbSchema.POC_REPO TO ROLE $uiRole;
+GRANT CREATE SERVICE ON SCHEMA $dbSchema           TO ROLE $uiRole;
+GRANT BIND SERVICE ENDPOINT ON ACCOUNT             TO ROLE $uiRole;
+"@ -Label "create $opRole + $uiRole"
 
 # ---- step 2: admin UI service + endpoint grant -------------------------------
 
@@ -98,7 +116,11 @@ capabilities:
 
 # executeAsCaller requires a caller-token validity; without it the role-resolution
 # session fails with OAUTH_ACCESS_TOKEN_EXPIRED.
+# Least-privilege: create the service AS $uiRole so it owns the service (owner-rights
+# session = $uiRole, not ACCOUNTADMIN). Ownership is fixed at creation, so USE ROLE
+# must precede CREATE SERVICE. As owner, $uiRole can also grant the endpoint and MONITOR.
 Run-Sql @"
+USE ROLE $uiRole;
 CREATE SERVICE IF NOT EXISTS $dbSchema.MENDIX_DEPLOY_ADMIN_UI
     IN COMPUTE POOL $pool
     FROM SPECIFICATION `$`$
@@ -112,7 +134,12 @@ ALTER SERVICE $dbSchema.MENDIX_DEPLOY_ADMIN_UI SET SERVICE_CALLER_TOKEN_VALIDITY
 
 GRANT SERVICE ROLE $dbSchema.MENDIX_DEPLOY_ADMIN_UI!ALL_ENDPOINTS_USAGE
     TO ROLE $opRole;
-"@ -Label "CREATE SERVICE + endpoint grant"
+
+-- The controller reads the admin UI's container logs (GET /system/logs/admin-ui);
+-- with the admin UI owned by a different role, the controller role needs MONITOR.
+GRANT MONITOR ON SERVICE $dbSchema.MENDIX_DEPLOY_ADMIN_UI
+    TO ROLE $ctrlRole;
+"@ -Label "CREATE SERVICE + endpoint grant + MONITOR"
 
 # ---- step 3: endpoint ---------------------------------------------------------
 

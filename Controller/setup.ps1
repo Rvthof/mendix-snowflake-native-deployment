@@ -7,6 +7,11 @@
 # Prerequisites:
 #   - Snowflake CLI (snow) installed and connection configured
 #   - ACCOUNTADMIN role on the target account
+#   - The connection must be able to USE ROLE into MENDIX_DEPLOY_CONTROLLER_ROLE
+#     (i.e. NOT a role-restricted PAT, whose session forbids USE ROLE). The
+#     controller service is created under that scoped role so its owner-rights
+#     SQL session runs as the role, not ACCOUNTADMIN. Service ownership cannot be
+#     changed after creation, so this must be set at CREATE time.
 #   - Docker logged in to the Snowflake registry (for image builds/pushes)
 
 param(
@@ -71,6 +76,7 @@ GRANT CREATE SECRET    ON SCHEMA $dbSchema                       TO ROLE MENDIX_
 GRANT CREATE STAGE     ON SCHEMA $dbSchema                       TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
 GRANT CREATE TABLE     ON SCHEMA $dbSchema                       TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
 GRANT BIND SERVICE ENDPOINT ON ACCOUNT                           TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
+GRANT CREATE ROLE ON ACCOUNT                                     TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
 "@ -Label "role + grants"
 
 # ---- step 2: deploy stage and app registry table ----------------------------
@@ -163,7 +169,11 @@ capabilities:
 
 # executeAsCaller requires a caller-token validity; without it caller-rights
 # sessions fail with OAUTH_ACCESS_TOKEN_EXPIRED.
+# Least-privilege: create the service AS the scoped role so it owns the service and
+# its owner-rights session runs as that role (not ACCOUNTADMIN). Ownership is fixed
+# at creation and cannot be transferred, so the USE ROLE must precede CREATE SERVICE.
 Run-Sql @"
+USE ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
 CREATE SERVICE IF NOT EXISTS $dbSchema.MENDIX_DEPLOY_CONTROLLER
     IN COMPUTE POOL $pool
     FROM SPECIFICATION `$`$

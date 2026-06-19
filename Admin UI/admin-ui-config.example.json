@@ -12,6 +12,8 @@
   },
 
   "access": {
-    "operatorRole": "MENDIX_ADMIN_OPERATOR_ROLE"
+    "operatorRole": "MENDIX_ADMIN_OPERATOR_ROLE",
+    "adminUiRole": "MENDIX_ADMIN_UI_ROLE",
+    "controllerRole": "MENDIX_DEPLOY_CONTROLLER_ROLE"
   }
 }

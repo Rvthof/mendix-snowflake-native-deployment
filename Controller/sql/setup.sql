@@ -37,6 +37,9 @@ GRANT CREATE SECRET    ON SCHEMA <DB_SCHEMA>                    TO ROLE MENDIX_D
 GRANT CREATE STAGE     ON SCHEMA <DB_SCHEMA>                    TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
 GRANT CREATE TABLE     ON SCHEMA <DB_SCHEMA>                    TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
 GRANT BIND SERVICE ENDPOINT ON ACCOUNT                          TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
+-- Per-app end-user access control: lets the controller create APP_<NAME>_USER
+-- account roles at deploy time (see PLAN-app-access-control.md, decision B1).
+GRANT CREATE ROLE ON ACCOUNT                                    TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
 
 -- -------------------------------------------------------------
 -- 2. Deploy stage (PAD zips land here, mounted into all app services)
@@ -61,7 +64,8 @@ CREATE TABLE IF NOT EXISTS <DB_SCHEMA>.MENDIX_APPS (
     endpoint_url       VARCHAR,
     last_deploy_status VARCHAR,                      -- DEPLOYING | READY | FAILED
     created_at         TIMESTAMP  DEFAULT CURRENT_TIMESTAMP,
-    last_deployed_at   TIMESTAMP
+    last_deployed_at   TIMESTAMP,
+    owner_role         VARCHAR    DEFAULT 'MENDIX_ADMIN_OPERATOR_ROLE'  -- management-plane owner (see Admin UI)
 );
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE <DB_SCHEMA>.MENDIX_APPS
@@ -82,6 +86,15 @@ GRANT READ ON SECRET <DB_SCHEMA>.CTRL_PG_PASS TO ROLE MENDIX_DEPLOY_CONTROLLER_R
 -- -------------------------------------------------------------
 -- 5. Controller service
 -- -------------------------------------------------------------
+-- Least-privilege: an SPCS service's owner-rights SQL session runs as the SERVICE
+-- OWNER, and ownership is fixed at CREATE time (TRANSFER OWNERSHIP ON SERVICE is
+-- unsupported). Create the service AS MENDIX_DEPLOY_CONTROLLER_ROLE so the
+-- controller -- and every app service/secret/stage/role it provisions at runtime --
+-- runs as that scoped role rather than ACCOUNTADMIN. Requires a connection that can
+-- USE ROLE (a role-restricted PAT session cannot). The admin UI service is likewise
+-- created under its own minimal MENDIX_ADMIN_UI_ROLE (see Admin UI/setup.ps1), which
+-- grants MONITOR on itself back to this role so the controller can read its logs.
+USE ROLE MENDIX_DEPLOY_CONTROLLER_ROLE;
 CREATE SERVICE IF NOT EXISTS <DB_SCHEMA>.MENDIX_DEPLOY_CONTROLLER
     IN COMPUTE POOL <POOL>
     FROM SPECIFICATION $$

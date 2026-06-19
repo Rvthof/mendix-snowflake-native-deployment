@@ -123,6 +123,42 @@ def drop_service(name: str) -> None:
     execute_sql(f"DROP SERVICE IF EXISTS {_DB_SCHEMA}.{name}")
 
 
+# ---------------------------------------------------------------------------
+# Endpoint access control (data plane)
+#
+# Gates which authenticated end-users may open an app's public endpoint, via the
+# service's auto-created ALL_ENDPOINTS_USAGE service role granted to a per-app
+# account role. Distinct from owner_role (management plane); see
+# PLAN-app-access-control.md. The controller owns the services it creates, so it
+# can grant their service roles without MANAGE GRANTS; creating the account role
+# needs CREATE ROLE ON ACCOUNT (granted in setup).
+# ---------------------------------------------------------------------------
+
+def app_access_role_name(app_name: str) -> str:
+    """Account role that gates browser access to an app's endpoint."""
+    return f"APP_{app_name.upper()}_USER"
+
+
+def create_app_access_role(app_name: str) -> None:
+    role = app_access_role_name(app_name)
+    execute_sql(
+        f"CREATE ROLE IF NOT EXISTS {role} "
+        f"COMMENT = 'Browser access to the {app_name} Mendix app'"
+    )
+
+
+def grant_endpoint_to_role(service_name: str, role: str) -> None:
+    """Authorize a role to reach the service's public endpoint."""
+    execute_sql(
+        f"GRANT SERVICE ROLE {_DB_SCHEMA}.{service_name}!ALL_ENDPOINTS_USAGE "
+        f"TO ROLE {role}"
+    )
+
+
+def drop_app_access_role(app_name: str) -> None:
+    execute_sql(f"DROP ROLE IF EXISTS {app_access_role_name(app_name)}")
+
+
 def show_service_status(name: str) -> str | None:
     try:
         rows = execute_sql(f"DESCRIBE SERVICE {_DB_SCHEMA}.{name}")

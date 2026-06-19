@@ -535,6 +535,24 @@ The controller learns the caller's roles two ways, depending on the path:
 
 A request with no resolvable roles is denied (fail closed).
 
+The `owner_role` model above is the **management plane** (who may deploy and manage an app). It is separate from the **data plane** below (which end-users may open an app in a browser). The two do not overlap; see `PLAN-app-access-control.md`.
+
+#### End-user access control (data plane)
+
+App endpoints stay `public: true`, but each app is gated by a per-app account role. At deploy time the controller (decisions A1 + B1 in `PLAN-app-access-control.md`):
+
+1. Creates the account role `APP_<NAME>_USER` (needs `CREATE ROLE ON ACCOUNT`, granted to the controller role in `setup.sql` / `setup.ps1`).
+2. Grants the service's auto-created `ALL_ENDPOINTS_USAGE` service role to it.
+3. Also grants that service role to the app's `owner_role`, so the owner can always reach their own app even before end-user membership is set up.
+
+A user reaches the app only if they hold `APP_<NAME>_USER`, the `owner_role`, or a privileged role; otherwise SPCS ingress returns 403 before the container is touched. This gate is independent of `use_caller_rights` (which governs what SQL the app runs once inside, not ingress).
+
+**Membership is managed in the IdP via SCIM:** map an IdP group `APP_<NAME>_USER` to the same-named Snowflake role. With `DEFAULT_SECONDARY_ROLES = ('ALL')` (the account default), the role is active in-session automatically, so adding/removing users in the IdP grants/revokes app access with no Snowflake-side work. The controller pre-creates the role, so configure SCIM to grant membership into the **existing** role rather than create its own (name collision otherwise). For ad-hoc access without the IdP: `GRANT ROLE APP_<NAME>_USER TO USER <username>;`.
+
+On app deletion the controller drops the service (which auto-revokes the `owner_role` endpoint grant) and drops `APP_<NAME>_USER`.
+
+**Scope note:** only apps created after this change are gated. Apps deployed earlier keep their open endpoints until re-created; there is no backfill migration.
+
 #### Upgrading an existing deployment
 
 Existing installs need the `owner_role` column added and backfilled before the new controller image enforces it:
