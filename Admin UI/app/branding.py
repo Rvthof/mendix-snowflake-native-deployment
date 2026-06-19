@@ -7,7 +7,7 @@ default to light. Native theming colors Streamlit's own widgets correctly.
 
 This module adds only what the native theme cannot: the Titillium Web font
 (native `theme.font` takes no custom family) and the Siemens Deep Blue backdrop
-behind the white-only logo / header bar. See PLAN-2-siemens-ix-styling.md.
+behind the white-only logo / header bar.
 """
 from __future__ import annotations
 

@@ -473,7 +473,7 @@ Wait for `MENDIX_DEPLOY_CONTROLLER` to return to RUNNING before deploying any ap
 
 ## Admin UI (Optional)
 
-A Streamlit-based admin UI is available under `Admin UI/`. It runs as a sibling SPCS service in the same compute pool, calls the controller over the internal SPCS network, and lets operators manage apps from a browser instead of from PowerShell. PAD uploads still go through `upload-pad.ps1`; the admin UI handles status, redeploys from an existing stage path, constants edits, suspend/resume, logs, and delete.
+A Streamlit-based admin UI is available under `Admin UI/`. It runs as a sibling SPCS service in the same compute pool, calls the controller over the internal SPCS network, and lets operators manage apps from a browser instead of from PowerShell. It handles status, browser PAD upload, redeploys from an existing stage path, constants and spec edits, suspend/resume, logs, and delete. `upload-pad.ps1` remains the primary path for large PADs and CI automation.
 
 The admin UI is multi-tenant: each app has an `owner_role` and an operator sees and manages only the apps owned by roles they hold. See [Access model](#access-model-multi-tenant-isolation) below.
 
@@ -547,7 +547,12 @@ Deploy the admin UI before the controller: a new admin UI sending `X-Operator-Ro
 
 ### Theming (Siemens iX)
 
-The admin UI applies Siemens iX-aligned styling via `Admin UI/app/branding.py::apply_branding()`, called from every page after `st.set_page_config`. It injects the Titillium Web font (Google Fonts, an open stand-in for licensed Siemens Sans), the iX v5 Classic color tokens with light/dark handled through `@media (prefers-color-scheme)`, and a persistent Siemens logo via `st.logo()` (vendored at `Admin UI/app/assets/siemens-logo-white.svg`). The logo is white-only, so its container is given a dark backdrop in both light and dark mode. The theme's primary color is set with the `STREAMLIT_THEME_PRIMARY_COLOR` env var in the service spec; everything else is CSS-only (no `.streamlit/config.toml`). Details and the exact token values are in [`PLAN-2-siemens-ix-styling.md`](PLAN-2-siemens-ix-styling.md).
+The admin UI applies Siemens iX-aligned styling in two layers:
+
+- **The iX Classic dark palette comes from Streamlit's native theme**, set via `STREAMLIT_THEME_*` env vars in the service spec (`setup.ps1` / `update.ps1`): `base=dark`, primary `#00bde3`, background `#0f1619`, secondary background `#283236`, text `#f5fcff`. Dark is pinned because the app runs embedded behind SPCS, which would otherwise default to light. Native theming colors Streamlit's own widgets correctly.
+- **`Admin UI/app/branding.py::apply_branding()`** (called from every page after `st.set_page_config`) adds only what the native theme cannot: the Titillium Web font (Google Fonts, an open stand-in for licensed Siemens Sans) and the Siemens Deep Blue (`#000028`) backdrop behind the white-only logo and header bar. The logo is persistent via `st.logo()` (vendored at `Admin UI/app/assets/siemens-logo-white.svg`).
+
+No `.streamlit/config.toml` is used; the palette is env-driven so it stays in sync between `setup.ps1` and `update.ps1`.
 
 ---
 
