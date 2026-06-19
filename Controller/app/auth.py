@@ -16,9 +16,13 @@ The discriminator is the presence of the caller token. See the memory
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import threading
+import time
+from dataclasses import dataclass, field
 
 import snowflake.connector
 from fastapi import Request
@@ -26,8 +30,27 @@ from fastapi import Request
 logger = logging.getLogger(__name__)
 
 _CALLER_TOKEN_HEADER = "Sf-Context-Current-User-Token"
+_OPERATOR_HEADER = "X-Operator"
 _OPERATOR_ROLES_HEADER = "X-Operator-Roles"
 _SERVICE_TOKEN_FILE = "/snowflake/session/token"
+
+# Caller identity (user + roles) is resolved from Snowflake on the public PAT
+# path. upload-pad.ps1 polls every 10s, so without a cache each poll pays a full
+# OAuth handshake; cache the resolved identity briefly, keyed by a hash of the
+# caller token. TTL is short so freshly granted roles are picked up quickly.
+_IDENTITY_CACHE_TTL_SECS = 60
+
+
+@dataclass
+class CallerIdentity:
+    """The authenticated caller: Snowflake username (may be None on the internal
+    path if no X-Operator header was sent) and the set of available roles."""
+    user: str | None
+    roles: set[str] = field(default_factory=set)
+
+
+_cache_lock = threading.Lock()
+_identity_cache: dict[str, tuple[float, CallerIdentity]] = {}
 
 
 def _privileged_roles() -> frozenset[str]:
@@ -45,12 +68,12 @@ def _read_service_token() -> str:
         return f.read().strip()
 
 
-def _roles_from_snowflake(caller_token: str) -> set[str]:
-    """Open a short-lived caller-rights session and read the caller's roles.
+def _identity_from_snowflake(caller_token: str) -> CallerIdentity:
+    """Open a short-lived caller-rights session and read the caller's user + roles.
 
-    Caller-rights discipline: this session runs ONLY CURRENT_AVAILABLE_ROLES(),
-    opens and closes per call, and is never reused for any other query. It is
-    separate from snowflake_client's owner-rights connection.
+    Caller-rights discipline: this session runs ONLY the identity query, opens and
+    closes per call, and is never reused for any other query. It is separate from
+    snowflake_client's owner-rights connection.
     """
     compound = f"{_read_service_token()}.{caller_token}"
     conn = snowflake.connector.connect(
@@ -61,26 +84,58 @@ def _roles_from_snowflake(caller_token: str) -> set[str]:
     )
     try:
         cur = conn.cursor()
-        cur.execute("SELECT CURRENT_AVAILABLE_ROLES()")
+        cur.execute("SELECT CURRENT_USER(), CURRENT_AVAILABLE_ROLES()")
         row = cur.fetchone()
-        raw = row[0] if row else None
+        user = str(row[0]) if row and row[0] else None
+        raw = row[1] if row and len(row) > 1 else None
         roles = json.loads(raw) if raw else []
-        return {str(r).upper() for r in roles}
+        return CallerIdentity(user=user, roles={str(r).upper() for r in roles})
     finally:
         conn.close()
 
 
-def resolve_caller_roles(request: Request) -> set[str]:
-    """Return the authoritative role set for the request, or empty (fail closed)."""
+def _cached_identity(caller_token: str) -> CallerIdentity:
+    key = hashlib.sha256(caller_token.encode()).hexdigest()
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _identity_cache.get(key)
+        if hit and now - hit[0] < _IDENTITY_CACHE_TTL_SECS:
+            return hit[1]
+    # Resolve outside the lock (network call); a concurrent miss for the same
+    # token at worst resolves twice, which is harmless.
+    identity = _identity_from_snowflake(caller_token)
+    with _cache_lock:
+        # Opportunistically drop expired entries so the cache can't grow unbounded
+        # as tokens rotate.
+        expired = [k for k, (ts, _) in _identity_cache.items() if now - ts >= _IDENTITY_CACHE_TTL_SECS]
+        for k in expired:
+            del _identity_cache[k]
+        _identity_cache[key] = (now, identity)
+    return identity
+
+
+def resolve_caller(request: Request) -> CallerIdentity:
+    """Return the authoritative caller identity for the request (fail closed).
+
+    Public PAT path: SPCS injects a caller token, so user + roles are resolved
+    from Snowflake (and cached). Internal admin-UI path: trust the X-Operator /
+    X-Operator-Roles headers the admin UI derived under the operator's identity.
+    """
     caller_token = request.headers.get(_CALLER_TOKEN_HEADER)
     if caller_token:
         try:
-            return _roles_from_snowflake(caller_token)
+            return _cached_identity(caller_token)
         except Exception:
-            logger.exception("Failed to resolve caller roles from Snowflake")
-            return set()
+            logger.exception("Failed to resolve caller identity from Snowflake")
+            return CallerIdentity(user=None, roles=set())
     raw = request.headers.get(_OPERATOR_ROLES_HEADER, "")
-    return {r.strip().upper() for r in raw.split(",") if r.strip()}
+    roles = {r.strip().upper() for r in raw.split(",") if r.strip()}
+    return CallerIdentity(user=request.headers.get(_OPERATOR_HEADER) or None, roles=roles)
+
+
+def resolve_caller_roles(request: Request) -> set[str]:
+    """Return the authoritative role set for the request, or empty (fail closed)."""
+    return resolve_caller(request).roles
 
 
 def authorize(owner_role: str | None, roles: set[str]) -> bool:

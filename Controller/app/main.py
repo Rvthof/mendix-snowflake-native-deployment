@@ -20,8 +20,6 @@ from .models import (
     AppRecord,
     AppStatusResponse,
     CreateAppRequest,
-    DeployResponse,
-    MissingConstantsError,
     RESOURCE_TIERS,
     ResourceTier,
     UpdateConstantsRequest,
@@ -44,20 +42,36 @@ app = FastAPI(title="Mendix SPCS Deployment Controller", lifespan=lifespan)
 
 @app.middleware("http")
 async def log_operator(request: Request, call_next):
-    if request.method in ("POST", "PUT", "DELETE"):
-        operator = request.headers.get("X-Operator", "<anonymous>")
+    is_mutation = request.method in ("POST", "PUT", "DELETE")
+    response = await call_next(request)
+    if is_mutation:
+        # Identify the operator. The admin UI sets X-Operator; PAT clients
+        # (upload-pad.ps1) don't, so resolve the real Snowflake user from the
+        # caller token (a cache hit, since the route dependency already resolved it).
+        operator = request.headers.get("X-Operator")
+        if not operator:
+            try:
+                operator = auth.resolve_caller(request).user
+            except Exception:
+                operator = None
+        operator = operator or "<anonymous>"
         action, app_name = activity.derive_action(request.method, request.url.path)
-        logger.info("operator=%s %s %s", operator, request.method, request.url.path)
+        # Record the real outcome: 2xx accepted the call, anything else was rejected
+        # (authorization, validation, or a synchronous error). Background deploy
+        # outcomes are tracked separately in the registry's last_deploy_status.
+        result = "accepted" if response.status_code < 400 else f"rejected ({response.status_code})"
+        logger.info("operator=%s %s %s -> %s", operator, request.method, request.url.path, response.status_code)
         try:
             activity.insert(
                 operator=operator,
                 action=action,
                 app_name=app_name,
-                detail={"path": request.url.path, "method": request.method},
+                detail={"path": request.url.path, "method": request.method, "status": response.status_code},
+                result=result,
             )
         except Exception:
             logger.exception("Failed to record activity row")
-    return await call_next(request)
+    return response
 
 DB_SCHEMA = os.environ["DB_SCHEMA"]
 COMPUTE_POOL = os.environ["COMPUTE_POOL"]

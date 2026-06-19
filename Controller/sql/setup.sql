@@ -130,13 +130,32 @@ spec:
   - name: controller-api
     port: 8080
     public: true
+capabilities:
+  securityContext:
+    executeAsCaller: true
 $$
     MIN_INSTANCES = 1
     MAX_INSTANCES = 1
     QUERY_WAREHOUSE = <WAREHOUSE>;
 
+-- executeAsCaller lets the controller resolve a PAT caller's roles (and username)
+-- via a caller-rights session; without a caller-token validity those sessions fail
+-- with OAUTH_ACCESS_TOKEN_EXPIRED, so set it after CREATE.
+ALTER SERVICE <DB_SCHEMA>.MENDIX_DEPLOY_CONTROLLER
+    SET SERVICE_CALLER_TOKEN_VALIDITY_SECS = 1800;
+
 -- -------------------------------------------------------------
--- 6. (Optional) Restrict controller endpoint to specific roles
+-- 6. Activity audit log
+-- -------------------------------------------------------------
+-- The MENDIX_ACTIVITY table is created (and granted to the controller role)
+-- automatically at controller startup by app/activity.py::init_table(). It is
+-- listed here for completeness; no manual step is required.
+--   CREATE TABLE IF NOT EXISTS <DB_SCHEMA>.MENDIX_ACTIVITY (
+--       id NUMBER AUTOINCREMENT PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+--       operator VARCHAR, action VARCHAR, app_name VARCHAR, detail VARIANT, result VARCHAR);
+
+-- -------------------------------------------------------------
+-- 7. (Optional) Restrict controller endpoint to specific roles
 -- -------------------------------------------------------------
 -- GRANT SERVICE ROLE <DB_SCHEMA>.MENDIX_DEPLOY_CONTROLLER!all_endpoints_usage
 --     TO ROLE <ci_or_admin_role>;

@@ -18,6 +18,10 @@ The optional [Streamlit admin UI](#admin-ui-optional) manages apps from a browse
 
 ![Admin UI — Service logs](Screenshots/logs.png)
 
+**Activity** — an audit log of every mutating operation (deploy, suspend, resume, constants/spec edit, delete), recording the operator, action, target app, and outcome.
+
+![Admin UI — Activity audit log](Screenshots/activity-screen.png)
+
 ## What This Is
 
 A controller-based deployment toolkit for running Mendix apps on SPCS:
@@ -57,6 +61,7 @@ A controller-based deployment toolkit for running Mendix apps on SPCS:
 - **Database**: Snowflake Postgres instance; one database per app, auto-created at startup
 - **File storage**: Snowflake internal stage mounted as a volume (files are queryable from SQL)
 - **Auth**: Snowflake OAuth on the endpoint; SnowflakeSSO module maps Snowflake users to Mendix users
+- **End-user access**: each app's public endpoint is gated by a per-app account role (`APP_<NAME>_USER`); only members of that role, the app's `owner_role`, or a privileged role reach the app. Membership is managed in the IdP via SCIM. See the howto's [Access model](mendix-spcs-howto.md#access-model-multi-tenant-isolation).
 - **Data access**: Caller's rights with compound token; queries execute as the logged-in user
 - **Deploy**: PAD zip uploaded to stage via Snow CLI; controller alters or restarts the service in-place, preserving the endpoint URL
 
@@ -74,7 +79,8 @@ Full one-time setup is in [mendix-spcs-howto.md](mendix-spcs-howto.md). The shor
 
 1. Build and push the `mendix-base` image once (shared across all apps)
 2. Run `.\Controller\setup.ps1` to provision the controller infrastructure
-3. For each app, export a Portable App Distribution from Studio Pro and run:
+3. Build and push the `mendix-deploy-controller` image, then wait for the controller service to reach RUNNING (see the howto, Step 4)
+4. For each app, export a Portable App Distribution from Studio Pro and run:
 
 ```powershell
 .\Controller\upload-pad.ps1 `

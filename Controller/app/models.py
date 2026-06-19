@@ -26,7 +26,9 @@ class CreateAppRequest(BaseModel):
     resource_tier: ResourceTier = ResourceTier.medium
     use_caller_rights: bool = False
     constants: dict[str, str] = Field(default_factory=dict)
-    owner_role: str = "MENDIX_ADMIN_OPERATOR_ROLE"
+    # Interpolated into GRANT … TO ROLE; constrain to an identifier so a privileged
+    # caller can't inject SQL via this field (the UI restricts it, the API didn't).
+    owner_role: str = Field(default="MENDIX_ADMIN_OPERATOR_ROLE", pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
 class UpdateConstantsRequest(BaseModel):
@@ -53,16 +55,6 @@ class AppRecord(BaseModel):
     last_deployed_at: Optional[str]
 
 
-class DeployResponse(BaseModel):
-    endpoint_url: Optional[str]
-    status: str
-
-
 class AppStatusResponse(BaseModel):
     app: AppRecord
     service_status: Optional[str]
-
-
-class MissingConstantsError(BaseModel):
-    detail: str
-    missing: list[str]

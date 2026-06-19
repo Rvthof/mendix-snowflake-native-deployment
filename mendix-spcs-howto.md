@@ -473,11 +473,13 @@ Wait for `MENDIX_DEPLOY_CONTROLLER` to return to RUNNING before deploying any ap
 
 ## Admin UI (Optional)
 
-A Streamlit-based admin UI is available under `Admin UI/`. It runs as a sibling SPCS service in the same compute pool, calls the controller over the internal SPCS network, and lets operators manage apps from a browser instead of from PowerShell. It handles status, browser PAD upload, redeploys from an existing stage path, constants and spec edits, suspend/resume, logs, and delete. `upload-pad.ps1` remains the primary path for large PADs and CI automation.
+A Streamlit-based admin UI is available under `Admin UI/`. It runs as a sibling SPCS service in the same compute pool, calls the controller over the internal SPCS network, and lets operators manage apps from a browser instead of from PowerShell. It handles status, browser PAD upload, redeploys from an existing stage path, constants and spec edits, suspend/resume, logs, an activity audit log, and delete. `upload-pad.ps1` remains the primary path for large PADs and CI automation.
 
 The admin UI is multi-tenant: each app has an `owner_role` and an operator sees and manages only the apps owned by roles they hold. See [Access model](#access-model-multi-tenant-isolation) below.
 
 The Logs page also exposes the infrastructure services' own logs (the controller and the admin UI itself) as selectable sources. These are restricted to privileged operators (roles intersecting `PRIVILEGED_ROLES`, default `MENDIX_DEPLOY_CONTROLLER_ROLE`) and served by the controller's `GET /system/logs/{target}` endpoint, since they span every tenant's activity.
+
+The **Activity** page is an audit log of every mutating operation (deploy, suspend, resume, constants/spec edit, delete). The controller records one row per mutating request in the `MENDIX_ACTIVITY` table (created automatically at controller startup) with the operator, action, target app, request path, and outcome (`accepted` for a 2xx, `rejected (<code>)` otherwise). The operator is the Snowflake user behind the call: the admin UI forwards it as `X-Operator`, and for PAT clients (`upload-pad.ps1`) the controller resolves it from the caller token. Non-privileged operators see only activity for apps they own; privileged operators see everything, including app-less rows such as failed create attempts. Background deploy outcomes (READY / FAILED) are tracked separately in each app's deploy status, not here.
 
 ### One-Time Setup
 
