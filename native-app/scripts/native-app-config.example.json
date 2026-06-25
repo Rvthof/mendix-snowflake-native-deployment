@@ -1,0 +1,6 @@
+{
+  "snowConnection": "<snow-cli-connection-name>",
+  "providerDb": "<PROVIDER_DATABASE>",
+  "providerSchema": "<PROVIDER_SCHEMA>",
+  "repo": "MENDIX_NATIVE_REPO"
+}

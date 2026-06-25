@@ -1,5 +1,7 @@
 Controller/controller-config.json
 Admin UI/admin-ui-config.json
+native-app/scripts/native-app-config.json
+native-app/.build/
 service_spec.yaml
 .snowflake
 __pycache__/

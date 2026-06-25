@@ -1,0 +1,76 @@
+# =============================================================================
+# Mendix-on-SPCS Native App — manifest
+#
+# Replaces the three setup.ps1 scripts' "what infrastructure do we need" intent
+# with a declarative privilege + reference contract the consumer fulfils at
+# install (see PLAN-native-app-packaging.md §5.1).
+#
+# IMAGE PATHS: a single fixed provider-side fully-qualified name, used identically
+# here (the allow-list) and in every CREATE SERVICE in setup_script.sql. They are
+# NOT re-pathed to the app's own database at runtime (verified against
+# docs.snowflake.com/.../container-containers). The <PROVIDER_*> tokens below are
+# concrete provider values fixed when the image repository is created; the build
+# pipeline (scripts/build-and-push.ps1) substitutes them before `snow app` deploy.
+# =============================================================================
+
+manifest_version: 2          # VERIFY with `snow app validate`; plan §5.1 specifies 2 (auto-grant privileges)
+
+version:
+  name: v1
+  label: "Mendix on SPCS"
+  comment: "Mendix deployment controller + admin UI for Snowpark Container Services"
+
+artifacts:
+  readme: readme.md
+  setup_script: setup_script.sql
+  # Admin UI is the landing page. The service is created by grant_callback /
+  # register_reference, so it exists by the time Snowsight resolves this endpoint.
+  default_web_endpoint:
+    service: app_public.mendix_deploy_admin_ui
+    endpoint: streamlit
+  container_services:
+    images:
+      - /<PROVIDER_DB>/<PROVIDER_SCHEMA>/<REPO>/mendix-deploy-controller:latest
+      - /<PROVIDER_DB>/<PROVIDER_SCHEMA>/<REPO>/mendix-admin-ui:latest
+      - /<PROVIDER_DB>/<PROVIDER_SCHEMA>/<REPO>/mendix-base:latest
+
+# Required for any app with containers: invoked after the consumer grants the
+# account-level privileges below. Provisions the compute pool + warehouse.
+configuration:
+  grant_callback: app_public.grant_callback
+
+# Required because the controller and admin UI services run executeAsCaller.
+restricted_callers_rights:
+  enabled: true
+  description: "The controller and admin UI act with the caller's rights to resolve operator roles"
+
+# Account-level privileges the consumer grants by clicking through the install
+# dialog. Everything inside the app's own namespace (SERVICE/SECRET/STAGE/TABLE)
+# needs no account grant — the app role owns those objects.
+privileges:
+  - CREATE COMPUTE POOL:
+      description: "Run the controller, admin UI, and per-app Mendix services"
+  - BIND SERVICE ENDPOINT:
+      description: "Expose the admin UI and per-app web endpoints"
+  - CREATE WAREHOUSE:
+      description: "Query warehouse for the services"
+
+# Consumer binds two existing ACCOUNTADMIN-owned objects at install. These replace
+# the controller's CTRL_PG_HOST / CTRL_PG_PASS secrets and the PG_EAI env var.
+references:
+  - pg_secret:
+      label: "Postgres credentials"
+      description: "Secret holding the Snowflake-managed Postgres host:port and application password"
+      privileges:
+        - READ
+      object_type: SECRET
+      register_callback: app_public.register_reference
+      configuration_callback: app_public.get_reference_config   # required for SECRET refs
+  - pg_eai:
+      label: "Postgres egress integration"
+      description: "External access integration permitting egress to the Postgres instance"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL_ACCESS_INTEGRATION                   # underscores — validated correct (Cortex was wrong)
+      register_callback: app_public.register_reference
+      configuration_callback: app_public.get_reference_config   # required for EAI refs
