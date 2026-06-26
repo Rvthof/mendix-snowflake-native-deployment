@@ -128,35 +128,46 @@ def drop_service(name: str) -> None:
 #
 # Gates which authenticated end-users may open an app's public endpoint, via the
 # service's auto-created ALL_ENDPOINTS_USAGE service role granted to a per-app
-# account role. Distinct from owner_role (management plane); see
-# PLAN-app-access-control.md. The controller owns the services it creates, so it
-# can grant their service roles without MANAGE GRANTS; creating the account role
-# needs CREATE ROLE ON ACCOUNT (granted in setup).
+# APPLICATION role. Distinct from owner_role (management plane); see
+# PLAN-app-access-control.md and PLAN-native-app-packaging.md section 6.
+#
+# Inside the Native App the controller session is the app role, which owns the
+# services and every application role, so it can both create the per-app
+# application role at runtime and grant the service role to it (no account-level
+# CREATE ROLE / MANAGE GRANTS needed). Runtime CREATE/GRANT/DROP APPLICATION ROLE
+# is validated (O1). End-user membership is managed by the consumer (SCIM/IdP):
+#   GRANT APPLICATION ROLE <app>.app_<name>_user TO USER <u>;
 # ---------------------------------------------------------------------------
 
+# The management application role operators hold (created in setup_script.sql).
+# Endpoint access is granted to it for owner bootstrap (an operator can reach any
+# app before the per-app IdP group is populated), mirroring the old owner_role grant.
+APP_ADMIN_ROLE = "app_admin"
+
+
 def app_access_role_name(app_name: str) -> str:
-    """Account role that gates browser access to an app's endpoint."""
-    return f"APP_{app_name.upper()}_USER"
+    """Application role that gates browser access to an app's endpoint."""
+    return f"app_{app_name.lower()}_user"
 
 
 def create_app_access_role(app_name: str) -> None:
-    role = app_access_role_name(app_name)
     execute_sql(
-        f"CREATE ROLE IF NOT EXISTS {role} "
-        f"COMMENT = 'Browser access to the {app_name} Mendix app'"
+        f"CREATE APPLICATION ROLE IF NOT EXISTS {app_access_role_name(app_name)}"
     )
 
 
-def grant_endpoint_to_role(service_name: str, role: str) -> None:
-    """Authorize a role to reach the service's public endpoint."""
+def grant_endpoint_to_app_role(service_name: str, app_role: str) -> None:
+    """Authorize an application role to reach the service's public endpoint."""
     execute_sql(
         f"GRANT SERVICE ROLE {_DB_SCHEMA}.{service_name}!ALL_ENDPOINTS_USAGE "
-        f"TO ROLE {role}"
+        f"TO APPLICATION ROLE {app_role}"
     )
 
 
 def drop_app_access_role(app_name: str) -> None:
-    execute_sql(f"DROP ROLE IF EXISTS {app_access_role_name(app_name)}")
+    execute_sql(
+        f"DROP APPLICATION ROLE IF EXISTS {app_access_role_name(app_name)}"
+    )
 
 
 def show_service_status(name: str) -> str | None:

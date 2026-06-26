@@ -327,13 +327,16 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
     if req.use_caller_rights:
         sf.set_caller_token_validity(service_name, 1800)
 
-    # Data-plane access control (PLAN-app-access-control.md, A1 + B1): gate the
-    # public endpoint behind a per-app access role. End-user membership of
-    # APP_<NAME>_USER is managed in the IdP via SCIM. Also grant the owner_role so
-    # the owner can always reach their own app before the IdP group is populated.
+    # Data-plane access control (PLAN-app-access-control.md A1+B1;
+    # PLAN-native-app-packaging.md section 6): gate the public endpoint behind a
+    # per-app APPLICATION role. End-user membership of app_<name>_user is managed
+    # in the IdP via SCIM (GRANT APPLICATION ROLE ... TO USER). Also grant app_admin
+    # so any operator can reach the app before the IdP group is populated (owner
+    # bootstrap; replaces the old owner_role grant - an application cannot grant its
+    # service role to a consumer account role).
     sf.create_app_access_role(req.name)
-    sf.grant_endpoint_to_role(service_name, sf.app_access_role_name(req.name))
-    sf.grant_endpoint_to_role(service_name, req.owner_role)
+    sf.grant_endpoint_to_app_role(service_name, sf.app_access_role_name(req.name))
+    sf.grant_endpoint_to_app_role(service_name, sf.APP_ADMIN_ROLE)
 
     # Endpoint URL is not available until the service starts; it's captured by _run_deploy.
     record = AppRecord(
@@ -645,6 +648,6 @@ def delete_app(name: str, roles: set[str] = Depends(caller_roles)):
 
     sf.drop_service(record.service_name)
     # Dropping the service auto-drops its service roles (revoking the endpoint
-    # grant from owner_role); the per-app account role persists, so drop it.
+    # grant from app_admin); the per-app application role persists, so drop it.
     sf.drop_app_access_role(name)
     registry.delete_app(name)

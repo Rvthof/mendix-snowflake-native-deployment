@@ -26,7 +26,13 @@ _ACTION_PATTERNS = [
 
 
 def init_table() -> None:
-    """Idempotent: creates MENDIX_ACTIVITY and grants the controller role."""
+    """Idempotent: ensure MENDIX_ACTIVITY exists.
+
+    In the Native App the table is pre-created in setup_script.sql and owned by the
+    app role (the controller's session), so ownership covers SELECT/INSERT and no
+    per-table grant to a controller account role is needed. CREATE TABLE IF NOT
+    EXISTS stays for local-dev runs outside the app.
+    """
     sf.execute_sql(textwrap.dedent(f"""\
         CREATE TABLE IF NOT EXISTS {_TABLE} (
             id        NUMBER AUTOINCREMENT PRIMARY KEY,
@@ -38,10 +44,6 @@ def init_table() -> None:
             result    VARCHAR
         )
     """))
-    sf.execute_sql(
-        f"GRANT SELECT, INSERT ON TABLE {_TABLE} "
-        "TO ROLE MENDIX_DEPLOY_CONTROLLER_ROLE"
-    )
 
 
 def derive_action(method: str, path: str) -> tuple[str, Optional[str]]:
