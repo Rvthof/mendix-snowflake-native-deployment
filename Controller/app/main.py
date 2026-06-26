@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -91,20 +92,34 @@ SYSTEM_SERVICES: dict[str, tuple[str, str]] = {
     "admin-ui": (ADMIN_UI_SERVICE_NAME, "streamlit"),
 }
 
-# Derived from controller secrets at startup
+# Derived from the bound pg_secret at startup
 _PG_HOST: str | None = None
+_PG_PASSWORD: str | None = None
+
+
+def _load_pg_credentials() -> tuple[str, str]:
+    """Read the bound pg_secret (GENERIC_STRING) mounted at /secrets/pg.
+
+    The secret string is JSON: {"host": "<host:port>", "password": "<pw>"}.
+    Both values are cached after the first read. Falls back to PG_HOST / PG_PASS
+    env vars for local development outside SPCS.
+    """
+    global _PG_HOST, _PG_PASSWORD
+    if _PG_HOST is None or _PG_PASSWORD is None:
+        secret_file = "/secrets/pg/secret_string"
+        if os.path.exists(secret_file):
+            with open(secret_file) as f:
+                data = json.loads(f.read())
+            _PG_HOST = str(data["host"]).strip()
+            _PG_PASSWORD = str(data["password"])
+        else:
+            _PG_HOST = os.environ.get("PG_HOST", "localhost:5432")
+            _PG_PASSWORD = os.environ.get("PG_PASS", "")
+    return _PG_HOST, _PG_PASSWORD
 
 
 def _pg_host() -> str:
-    global _PG_HOST
-    if _PG_HOST is None:
-        secret_file = "/secrets/pg_host/secret_string"
-        if os.path.exists(secret_file):
-            with open(secret_file) as f:
-                _PG_HOST = f.read().strip()
-        else:
-            _PG_HOST = os.environ.get("PG_HOST", "localhost:5432")
-    return _PG_HOST
+    return _load_pg_credentials()[0]
 
 
 def _service_name(app_name: str) -> str:
@@ -290,16 +305,11 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
     sf.create_stage(filestorage_fqn)
 
     # Create PG password and admin password secrets.
-    # Read the actual PG password from the controller's own mounted secret (CTRL_PG_PASS).
+    # Read the bootstrap PG password from the controller's bound pg_secret (/secrets/pg).
     # req.pg_database is the target database name, not the password.
-    _pg_pass_file = "/secrets/pg_pass/secret_string"
-    if os.path.exists(_pg_pass_file):
-        with open(_pg_pass_file) as f:
-            pg_password = f.read().strip()
-    else:
-        pg_password = ""
+    _, pg_password = _load_pg_credentials()
     if not pg_password:
-        raise HTTPException(status_code=500, detail="Controller PG password secret not mounted at /secrets/pg_pass")
+        raise HTTPException(status_code=500, detail="Controller PG credentials not mounted at /secrets/pg")
     sf.create_or_replace_secret(_secret_fqn(req.name, "PG_PASS"), pg_password)
     sf.create_or_replace_secret(_secret_fqn(req.name, "ADMIN_PASS"), req.admin_password)
 

@@ -13,8 +13,9 @@ controller brings each one up as its own container service.
 
 ## What you bind at install
 
-- **pg_secret** - a secret holding your Snowflake-managed Postgres `host:port` and
-  application password.
+- **pg_secret** - a GENERIC_STRING secret whose value is JSON holding your
+  Snowflake-managed Postgres `host:port` and application password:
+  `{"host":"<host>:5432","password":"<application password>"}`.
 - **pg_eai** - an external access integration permitting egress to that Postgres
   instance.
 
