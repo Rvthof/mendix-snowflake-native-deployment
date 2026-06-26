@@ -109,9 +109,17 @@ def _load_pg_credentials() -> tuple[str, str]:
         secret_file = "/secrets/pg/secret_string"
         if os.path.exists(secret_file):
             with open(secret_file) as f:
-                data = json.loads(f.read())
-            _PG_HOST = str(data["host"]).strip()
-            _PG_PASSWORD = str(data["password"])
+                raw = f.read()
+            try:
+                data = json.loads(raw)
+                _PG_HOST = str(data["host"]).strip()
+                _PG_PASSWORD = str(data["password"])
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                raise RuntimeError(
+                    "pg_secret at /secrets/pg/secret_string must be JSON with "
+                    '"host" and "password" keys, e.g. '
+                    '{"host": "<host:port>", "password": "<pw>"}'
+                ) from e
         else:
             _PG_HOST = os.environ.get("PG_HOST", "localhost:5432")
             _PG_PASSWORD = os.environ.get("PG_PASS", "")
