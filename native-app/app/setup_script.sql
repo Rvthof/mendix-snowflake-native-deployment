@@ -64,6 +64,13 @@ CREATE TABLE IF NOT EXISTS app_public.MENDIX_ACTIVITY (
 CREATE STAGE IF NOT EXISTS app_public.MENDIX_DEPLOY_STAGE
     ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
 
+-- Power-user CLI deploy path (PLAN section 5.5): large PADs exceed the SPCS ingress
+-- upload limit on the browser->Streamlit hop, so consumers cannot push them through
+-- the admin UI. Granting READ+WRITE on the deploy stage to app_admin lets a consumer
+-- holding app_admin `snow stage copy` the PAD straight to apps/<name>/current.zip,
+-- then trigger the deploy (Apps page "Redeploy" / POST /apps/<name>/trigger-deploy).
+GRANT READ, WRITE ON STAGE app_public.MENDIX_DEPLOY_STAGE TO APPLICATION ROLE app_admin;
+
 -- Single-row readiness state. Each callback records its own precondition here and
 -- maybe_start_services gates on all three, deterministically (SYSTEM$GET_ALL_REFERENCES
 -- does not return a clean empty sentinel for declared-but-unbound references, so we
@@ -98,10 +105,19 @@ BEGIN
     wh     := app_db || '_WH';
 
     IF (ARRAY_CONTAINS('CREATE COMPUTE POOL'::VARIANT, :privileges)) THEN
+        -- MAX_NODES must scale past the infra services: the controller + admin UI
+        -- occupy node capacity, and every deployed Mendix app adds another service.
+        -- With MAX_NODES = 1 no app service can ever schedule. One CPU_X64_XS node
+        -- (1 vCPU / 6 GB) fits a medium-tier app (0.5 vCPU / 1 GB request), so scale
+        -- by node count rather than node size.
         EXECUTE IMMEDIATE
             'CREATE COMPUTE POOL IF NOT EXISTS ' || pool ||
-            ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_XS' ||
+            ' MIN_NODES = 1 MAX_NODES = 5 INSTANCE_FAMILY = CPU_X64_XS' ||
             ' AUTO_RESUME = TRUE AUTO_SUSPEND_SECS = 3600';
+        -- CREATE IF NOT EXISTS will not change MAX_NODES on a pool that already
+        -- exists, so resize explicitly; this makes re-calling grant_callback the
+        -- supported way to apply a new ceiling.
+        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || pool || ' SET MAX_NODES = 5';
     END IF;
 
     IF (ARRAY_CONTAINS('CREATE WAREHOUSE'::VARIANT, :privileges)) THEN
@@ -263,6 +279,7 @@ BEGIN
       QUERY_WAREHOUSE: ' || wh || '
       CONTROLLER_SERVICE_NAME: MENDIX_DEPLOY_CONTROLLER
       ADMIN_UI_SERVICE_NAME: MENDIX_DEPLOY_ADMIN_UI
+      PRIVILEGED_ROLES: ACCOUNTADMIN
     secrets:
     - snowflakeSecret:
         objectReference: ''pg_secret''
@@ -343,6 +360,7 @@ BEGIN
     env:
       CONTROLLER_URL: http://mendix-deploy-controller:8080
       STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "1024"
+      DEPLOY_STAGE: "@' || db_schema || '.MENDIX_DEPLOY_STAGE"
       STREAMLIT_THEME_BASE: "dark"
       STREAMLIT_THEME_PRIMARY_COLOR: "#00bde3"
       STREAMLIT_THEME_BACKGROUND_COLOR: "#0f1619"

@@ -9,10 +9,22 @@ DEFAULT_TIMEOUT = 30.0
 class ControllerError(Exception):
     """Raised when the controller returns a non-2xx response."""
 
-    def __init__(self, status_code: int, message: str):
+    def __init__(self, status_code: int, message: str, body: dict | None = None):
         self.status_code = status_code
         self.message = message
+        self.body = body or {}
         super().__init__(f"controller returned {status_code}: {message}")
+
+    def missing_constants(self) -> list[str]:
+        """Constant names the controller reported as required-but-unset (422 deploy).
+
+        The controller raises HTTPException(detail={"detail": ..., "missing": [...]}),
+        which FastAPI wraps as {"detail": {"detail": ..., "missing": [...]}}.
+        """
+        detail = self.body.get("detail")
+        if isinstance(detail, dict) and isinstance(detail.get("missing"), list):
+            return [str(m) for m in detail["missing"]]
+        return []
 
 
 def _detail(response: httpx.Response) -> str:
@@ -42,7 +54,12 @@ class ControllerClient:
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         r = self._client.request(method, path, **kwargs)
         if r.status_code >= 400:
-            raise ControllerError(r.status_code, _detail(r))
+            body = None
+            try:
+                body = r.json()
+            except Exception:
+                body = None
+            raise ControllerError(r.status_code, _detail(r), body if isinstance(body, dict) else None)
         return r
 
     def list_apps(self) -> list[dict]:

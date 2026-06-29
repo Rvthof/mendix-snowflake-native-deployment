@@ -356,14 +356,16 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
         constants=req.constants,
         pad_stage_path=None,
         endpoint_url=None,
-        last_deploy_status="STARTING",
+        # Non-transient: the app has no PAD yet. A transient status here would
+        # disable the Redeploy action that performs the first deploy (deadlock).
+        last_deploy_status="NOT_DEPLOYED",
         created_at=None,
         last_deployed_at=None,
         owner_role=req.owner_role,
     )
     registry.create_app(record)
 
-    return {"service_name": service_name, "status": "STARTING"}
+    return {"service_name": service_name, "status": "NOT_DEPLOYED"}
 
 
 @app.get("/apps/{name}")
@@ -439,6 +441,10 @@ def _run_deploy(name: str, pad_path: str, record: AppRecord,
 
         if constants_changed:
             _sync_constant_secrets(name, pad_constants, new_constants)
+            # Persist constants alongside the secret sync so a failed restart cannot
+            # leave the registry and the per-app secrets out of step (see the same
+            # fix in _run_update_constants).
+            registry.update_app(name, {"constants": new_constants})
             spec = _build_spec(name, record.pg_database, ResourceTier(record.resource_tier),
                                _constants_from_dict(new_constants), record.use_caller_rights)
             sf.alter_service_spec(record.service_name, spec)
@@ -490,16 +496,39 @@ def deploy_pad(name: str, pad_file: UploadFile = File(...),
     return {"status": "DEPLOYING"}
 
 
+def _resolve_staged_pad(name: str) -> str | None:
+    """Find the PAD a consumer staged under apps/<name>/.
+
+    Prefer current.zip (the canonical name). Otherwise accept the newest .zip in
+    the directory, so the documented `snow stage copy <yourpad>.zip @.../apps/<name>/`
+    one-liner works without forcing the consumer to rename the file first.
+    """
+    app_dir = os.path.join(DEPLOY_STAGE_MOUNT, "apps", name)
+    canonical = os.path.join(app_dir, "current.zip")
+    if os.path.isfile(canonical):
+        return canonical
+    if not os.path.isdir(app_dir):
+        return None
+    zips = [
+        os.path.join(app_dir, f)
+        for f in os.listdir(app_dir)
+        if f.lower().endswith(".zip") and os.path.isfile(os.path.join(app_dir, f))
+    ]
+    if not zips:
+        return None
+    return max(zips, key=os.path.getmtime)
+
+
 @app.post("/apps/{name}/trigger-deploy", status_code=202)
 def trigger_deploy(name: str, background_tasks: BackgroundTasks,
                    roles: set[str] = Depends(caller_roles)):
-    """Trigger deploy from a PAD already at stage path apps/{name}/current.zip."""
+    """Trigger deploy from a PAD already staged under apps/{name}/ (current.zip or newest .zip)."""
     _record_for_mutation(name, roles)
-    pad_path = os.path.join(DEPLOY_STAGE_MOUNT, "apps", name, "current.zip")
-    if not os.path.exists(pad_path):
+    pad_path = _resolve_staged_pad(name)
+    if pad_path is None:
         raise HTTPException(
             status_code=400,
-            detail=f"PAD not found at stage path apps/{name}/current.zip — upload it first.",
+            detail=f"No PAD (.zip) found at stage path apps/{name}/ — upload it first.",
         )
     record, pad_constants, new_constants = _prepare_deploy(name, pad_path)
     registry.update_app(name, {"last_deploy_status": "DEPLOYING"})
@@ -510,6 +539,10 @@ def trigger_deploy(name: str, background_tasks: BackgroundTasks,
 def _run_update_constants(name: str, service_name: str, merged: dict,
                           record: AppRecord, constants: list[PadConstant]) -> None:
     """Background task for constants update."""
+    # Persist constants up front, independent of the restart outcome: the per-app
+    # secrets are already written by the endpoint handler, so a failed restart must
+    # not discard the registry copy (otherwise the UI shows constants as {}).
+    registry.update_app(name, {"constants": merged})
     try:
         spec = _build_spec(name, record.pg_database, ResourceTier(record.resource_tier),
                            constants, record.use_caller_rights)
@@ -517,7 +550,7 @@ def _run_update_constants(name: str, service_name: str, merged: dict,
         if not _poll_status(service_name, "RUNNING", timeout_secs=300):
             registry.update_app(name, {"last_deploy_status": "FAILED"})
             return
-        registry.update_app(name, {"constants": merged, "last_deploy_status": "READY"})
+        registry.update_app(name, {"last_deploy_status": "READY"})
     except Exception:
         try:
             registry.update_app(name, {"last_deploy_status": "FAILED"})

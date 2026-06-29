@@ -20,7 +20,7 @@ st.set_page_config(page_title="Apps", layout="wide")
 apply_branding()
 st.title("Apps")
 
-_TRANSIENT = {"DEPLOYING", "SUSPENDING", "RESUMING", "STARTING"}
+_TRANSIENT = {"DEPLOYING", "SUSPENDING", "RESUMING"}
 
 
 def _refresh_now() -> None:
@@ -96,6 +96,10 @@ table_rows = [
     for a in apps
 ]
 
+st.caption(
+    "Tick the checkbox at the left edge of a row to open its detail panel. "
+    "Tick several to enable bulk actions (suspend / resume / delete)."
+)
 selection = st.dataframe(
     table_rows,
     use_container_width=True,
@@ -144,7 +148,18 @@ def _detail_panel(selected_name: str) -> None:
                 _refresh_now()
                 st.rerun()
             except ControllerError as e:
-                st.error(str(e))
+                missing = e.missing_constants()
+                if e.status_code == 422 and missing:
+                    # The PAD declares constants with no value yet. Prefill them into
+                    # the Constants editor (keeping any values already set) and open it.
+                    current = record.get("constants") or {}
+                    merged = {**{m: "" for m in missing}, **current}
+                    st.session_state[f"constants-{selected_name}"] = json.dumps(merged, indent=2)
+                    st.session_state[f"open-constants-{selected_name}"] = True
+                    st.session_state[f"constants-missing-{selected_name}"] = missing
+                    st.rerun()
+                else:
+                    st.error(str(e))
     with action_cols[1]:
         if st.button("Suspend", key=f"suspend-{selected_name}",
                      disabled=svc_status == "SUSPENDED" or deploy_status in _TRANSIENT,
@@ -183,13 +198,25 @@ def _detail_panel(selected_name: str) -> None:
                 except ControllerError as e:
                     st.error(str(e))
 
-    with st.expander("Constants"):
+    with st.expander("Constants", expanded=st.session_state.get(f"open-constants-{selected_name}", False)):
+        missing_hint = st.session_state.get(f"constants-missing-{selected_name}")
+        if missing_hint:
+            st.warning(
+                "This PAD requires values for the constants below (prefilled with empty "
+                "values). Set each value, click **Save constants**, then **Redeploy**:\n"
+                + "\n".join(f"- `{m}`" for m in missing_hint)
+            )
         current = record.get("constants") or {}
+        constants_key = f"constants-{selected_name}"
+        # Once the widget exists in session_state, its content is authoritative
+        # (so a prefill written there survives); only seed `value` on first render.
+        text_kwargs = ({} if constants_key in st.session_state
+                       else {"value": json.dumps(current, indent=2)})
         edited = st.text_area(
             "Constants (JSON object: name -> value)",
-            value=json.dumps(current, indent=2),
             height=250,
-            key=f"constants-{selected_name}",
+            key=constants_key,
+            **text_kwargs,
         )
 
         parsed: dict | None = None
@@ -224,7 +251,10 @@ def _detail_panel(selected_name: str) -> None:
             try:
                 client().update_constants(selected_name, parsed)
                 _refresh_now()
-                st.success("Constants update triggered. Service will restart.")
+                # Clear the prefill/open hints now that values are saved.
+                st.session_state.pop(f"open-constants-{selected_name}", None)
+                st.session_state.pop(f"constants-missing-{selected_name}", None)
+                st.success("Constants saved. Click Redeploy to deploy the PAD with them.")
                 st.rerun()
             except ControllerError as e:
                 st.error(str(e))
