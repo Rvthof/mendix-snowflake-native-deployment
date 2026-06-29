@@ -429,6 +429,21 @@ def _prepare_deploy(
     return record, pad_constants, new_constants
 
 
+def _stamp_deploy_success(name: str, service_name: str, extra: dict | None = None) -> None:
+    """Record a successful deploy/restart: capture the live endpoint, stamp the deploy
+    time, and mark the app READY. Shared by every background task that restarts a
+    service so they all populate endpoint_url + last_deployed_at (a constants-only
+    deploy used to leave both empty)."""
+    update = {
+        "endpoint_url": sf.get_service_endpoint(service_name),
+        "last_deploy_status": "READY",
+        "last_deployed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if extra:
+        update.update(extra)
+    registry.update_app(name, update)
+
+
 def _run_deploy(name: str, pad_path: str, record: AppRecord,
                 pad_constants: list[PadConstant], new_constants: dict) -> None:
     """Background deploy task. registry status must be set to DEPLOYING before calling."""
@@ -458,13 +473,9 @@ def _run_deploy(name: str, pad_path: str, record: AppRecord,
             registry.update_app(name, {"last_deploy_status": "FAILED"})
             return
 
-        endpoint_url = sf.get_service_endpoint(record.service_name)
-        registry.update_app(name, {
+        _stamp_deploy_success(name, record.service_name, {
             "constants": new_constants,
             "pad_stage_path": f"apps/{name}/current.zip",
-            "endpoint_url": endpoint_url,
-            "last_deploy_status": "READY",
-            "last_deployed_at": datetime.now(timezone.utc).isoformat(),
         })
     except Exception:
         try:
@@ -550,7 +561,7 @@ def _run_update_constants(name: str, service_name: str, merged: dict,
         if not _poll_status(service_name, "RUNNING", timeout_secs=300):
             registry.update_app(name, {"last_deploy_status": "FAILED"})
             return
-        registry.update_app(name, {"last_deploy_status": "READY"})
+        _stamp_deploy_success(name, service_name)
     except Exception:
         try:
             registry.update_app(name, {"last_deploy_status": "FAILED"})

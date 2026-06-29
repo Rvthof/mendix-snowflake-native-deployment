@@ -208,15 +208,17 @@ def _detail_panel(selected_name: str) -> None:
             )
         current = record.get("constants") or {}
         constants_key = f"constants-{selected_name}"
-        # Once the widget exists in session_state, its content is authoritative
-        # (so a prefill written there survives); only seed `value` on first render.
-        text_kwargs = ({} if constants_key in st.session_state
-                       else {"value": json.dumps(current, indent=2)})
+        # Seed the editor from the stored constants exactly once, then let the widget
+        # own its value via `key` alone. Passing `value=` to a keyed widget inside this
+        # fragment reset the field on the first blur; seeding session_state directly
+        # avoids that. A prefill written by the Redeploy 422 handler lands in the same
+        # slot, so the guard preserves it too.
+        if constants_key not in st.session_state:
+            st.session_state[constants_key] = json.dumps(current, indent=2)
         edited = st.text_area(
             "Constants (JSON object: name -> value)",
             height=250,
             key=constants_key,
-            **text_kwargs,
         )
 
         parsed: dict | None = None
