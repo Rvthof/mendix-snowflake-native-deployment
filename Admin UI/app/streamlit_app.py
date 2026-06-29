@@ -26,6 +26,7 @@ with st.sidebar:
     st.page_link("pages/4_Upload.py", label="Upload PAD", icon=":material/upload_file:")
     st.page_link("pages/5_Activity.py", label="Activity", icon=":material/history:")
     st.page_link("pages/6_Setup.py", label="Setup / Verify", icon=":material/settings:")
+    st.page_link("pages/7_Infrastructure.py", label="Infrastructure", icon=":material/dns:")
 
 st.title("Mendix Deployment Admin")
 st.write(

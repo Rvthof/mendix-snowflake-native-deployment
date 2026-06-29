@@ -122,3 +122,22 @@ class ControllerClient:
 
     def delete_app(self, name: str) -> None:
         self._request("DELETE", f"/apps/{name}")
+
+    def get_compute_pool(self) -> dict:
+        return self._request("GET", "/system/compute-pool").json()
+
+    def update_compute_pool(
+        self,
+        *,
+        min_nodes: int | None = None,
+        max_nodes: int | None = None,
+        auto_suspend_secs: int | None = None,
+    ) -> dict:
+        body: dict = {}
+        if min_nodes is not None:
+            body["min_nodes"] = min_nodes
+        if max_nodes is not None:
+            body["max_nodes"] = max_nodes
+        if auto_suspend_secs is not None:
+            body["auto_suspend_secs"] = auto_suspend_secs
+        return self._request("PATCH", "/system/compute-pool", json=body).json()

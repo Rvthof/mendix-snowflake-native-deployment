@@ -23,6 +23,7 @@ from .models import (
     CreateAppRequest,
     RESOURCE_TIERS,
     ResourceTier,
+    UpdateComputePoolRequest,
     UpdateConstantsRequest,
     UpdateSpecRequest,
 )
@@ -43,7 +44,7 @@ app = FastAPI(title="Mendix SPCS Deployment Controller", lifespan=lifespan)
 
 @app.middleware("http")
 async def log_operator(request: Request, call_next):
-    is_mutation = request.method in ("POST", "PUT", "DELETE")
+    is_mutation = request.method in ("POST", "PUT", "PATCH", "DELETE")
     response = await call_next(request)
     if is_mutation:
         # Identify the operator. The admin UI sets X-Operator; PAT clients
@@ -402,6 +403,32 @@ def get_system_logs(target: str, lines: int = 200, roles: set[str] = Depends(cal
         # another service's logs) instead of an opaque 500.
         raise HTTPException(status_code=502, detail=f"Could not read {target} logs: {e}")
     return {"logs": logs}
+
+
+@app.get("/system/compute-pool")
+def get_compute_pool(roles: set[str] = Depends(caller_roles)):
+    if not (roles & auth.PRIVILEGED_ROLES):
+        raise HTTPException(status_code=403, detail="Restricted to privileged roles")
+    pool = sf.get_compute_pool(COMPUTE_POOL)
+    if pool is None:
+        raise HTTPException(status_code=404, detail=f"Compute pool '{COMPUTE_POOL}' not found")
+    return pool
+
+
+@app.patch("/system/compute-pool")
+def update_compute_pool(req: UpdateComputePoolRequest, roles: set[str] = Depends(caller_roles)):
+    if not (roles & auth.PRIVILEGED_ROLES):
+        raise HTTPException(status_code=403, detail="Restricted to privileged roles")
+    if req.min_nodes is None and req.max_nodes is None and req.auto_suspend_secs is None:
+        raise HTTPException(status_code=400, detail="At least one field must be provided")
+    sf.alter_compute_pool(
+        COMPUTE_POOL,
+        min_nodes=req.min_nodes,
+        max_nodes=req.max_nodes,
+        auto_suspend_secs=req.auto_suspend_secs,
+    )
+    pool = sf.get_compute_pool(COMPUTE_POOL)
+    return pool or {}
 
 
 def _prepare_deploy(

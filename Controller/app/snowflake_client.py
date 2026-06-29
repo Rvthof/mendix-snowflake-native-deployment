@@ -221,3 +221,38 @@ def get_service_logs(name: str, container: str = "mendix-app", lines: int = 100)
 def put_file(local_path: str, stage_path: str) -> None:
     """Upload a local file to an internal stage via PUT."""
     execute_sql(f"PUT file://{local_path} {stage_path} AUTO_COMPRESS=FALSE OVERWRITE=TRUE")
+
+
+def get_compute_pool(pool_name: str) -> dict | None:
+    rows = execute_sql(f"SHOW COMPUTE POOLS LIKE '{pool_name}'")
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "name": row.get("name"),
+        "state": row.get("state"),
+        "min_nodes": row.get("min_nodes"),
+        "max_nodes": row.get("max_nodes"),
+        "instance_family": row.get("instance_family"),
+        "auto_suspend_secs": row.get("auto_suspend_secs"),
+        "num_services": row.get("num_services"),
+    }
+
+
+def alter_compute_pool(
+    pool_name: str,
+    *,
+    min_nodes: int | None = None,
+    max_nodes: int | None = None,
+    auto_suspend_secs: int | None = None,
+) -> None:
+    parts = []
+    if min_nodes is not None:
+        parts.append(f"MIN_NODES = {int(min_nodes)}")
+    if max_nodes is not None:
+        parts.append(f"MAX_NODES = {int(max_nodes)}")
+    if auto_suspend_secs is not None:
+        parts.append(f"AUTO_SUSPEND_SECS = {int(auto_suspend_secs)}")
+    if not parts:
+        return
+    execute_sql(f"ALTER COMPUTE POOL {pool_name} SET {' '.join(parts)}")

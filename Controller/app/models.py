@@ -58,3 +58,9 @@ class AppRecord(BaseModel):
 class AppStatusResponse(BaseModel):
     app: AppRecord
     service_status: Optional[str]
+
+
+class UpdateComputePoolRequest(BaseModel):
+    min_nodes: Optional[int] = Field(None, ge=1)
+    max_nodes: Optional[int] = Field(None, ge=1)
+    auto_suspend_secs: Optional[int] = Field(None, ge=0)
