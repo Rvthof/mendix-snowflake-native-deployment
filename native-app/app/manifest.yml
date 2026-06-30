@@ -11,9 +11,15 @@
 # docs.snowflake.com/.../container-containers). The <PROVIDER_*> tokens below are
 # concrete provider values fixed when the image repository is created; the build
 # pipeline (scripts/build-and-push.ps1) substitutes them before `snow app` deploy.
+#
+# DIGEST PINNING: the ":latest" tags here are for dev readability only. At release,
+# build-and-push.ps1 rewrites each "<image>:latest" to its immutable "@sha256:..."
+# digest in the staged .build/ copy, so the frozen version pins the exact images
+# that passed the security review (no moving :latest). VERIFY-AT-RUN: confirm the
+# images allow-list accepts the @sha256 digest form via `snow app validate`.
 # =============================================================================
 
-manifest_version: 2          # VERIFY with `snow app validate`; plan section 5.1 specifies 2 (auto-grant privileges)
+manifest_version: 2          # validated end-to-end via the install dry-run (auto-grant privileges)
 
 version:
   name: v1

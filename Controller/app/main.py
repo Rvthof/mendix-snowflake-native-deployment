@@ -78,6 +78,11 @@ async def log_operator(request: Request, call_next):
 DB_SCHEMA = os.environ["DB_SCHEMA"]
 COMPUTE_POOL = os.environ["COMPUTE_POOL"]
 IMAGE_REPO = os.environ["IMAGE_REPO"]
+# Full image reference for per-app Mendix base services. Dev default is the repo
+# path + :latest; the release build (build-and-push.ps1) pins this to an immutable
+# @sha256 digest in the controller's service spec, so a frozen app version always
+# launches the exact image that passed the security review (not a moving :latest).
+MENDIX_BASE_IMAGE = os.environ.get("MENDIX_BASE_IMAGE", f"/{IMAGE_REPO}:latest")
 PG_EAI = os.environ["PG_EAI"]
 QUERY_WAREHOUSE = os.environ["QUERY_WAREHOUSE"]
 DEPLOY_STAGE = f"@{DB_SCHEMA}.MENDIX_DEPLOY_STAGE"
@@ -156,7 +161,7 @@ def _build_spec(
 ) -> str:
     res = RESOURCE_TIERS[resource_tier]
     pg_host_port = _pg_host()
-    image_path = f"/{IMAGE_REPO}:latest"
+    image_path = MENDIX_BASE_IMAGE
     pad_path = f"{DEPLOY_STAGE_MOUNT}/apps/{app_name}/current.zip"
 
     secret_entries = [

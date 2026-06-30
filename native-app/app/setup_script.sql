@@ -83,6 +83,24 @@ CREATE TABLE IF NOT EXISTS app_public.install_state (
 INSERT INTO app_public.install_state (pool_ready, secret_bound, eai_bound)
     SELECT FALSE, FALSE, FALSE WHERE NOT EXISTS (SELECT 1 FROM app_public.install_state);
 
+-- Internal-hop auth token. The admin UI calls the controller over the internal
+-- service-to-service hop, where SPCS injects no caller token, so it vouches for the
+-- operator's roles via the X-Operator-Roles header. The controller endpoint is
+-- public, so that header-trust is gated on this shared secret that only the in-app
+-- services carry (as the INTERNAL_AUTH_TOKEN env): a caller reaching the public
+-- endpoint without a Snowflake caller token AND without this token gets no roles.
+-- Generated once and kept stable across upgrades (guarded INSERT) so a re-run does
+-- not rotate it out from under the running services.
+CREATE TABLE IF NOT EXISTS app_public.internal_config (
+    config_key   VARCHAR NOT NULL PRIMARY KEY,
+    config_value VARCHAR NOT NULL
+);
+INSERT INTO app_public.internal_config (config_key, config_value)
+    SELECT 'internal_auth_token', REPLACE(UUID_STRING(), '-', '')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM app_public.internal_config WHERE config_key = 'internal_auth_token'
+    );
+
 -- -----------------------------------------------------------------------------
 -- 4. grant_callback - REQUIRED for apps with containers.
 --    Invoked by Snowflake after the consumer grants the manifest privileges.
@@ -149,8 +167,8 @@ BEGIN
     CASE (ref_name)
         WHEN 'pg_secret' THEN
             -- A Snowflake-managed-Postgres credential is an opaque string secret.
-            -- VERIFY: docs give a full payload only for OAUTH2; GENERIC_STRING shows
-            -- only payload.type. Confirm no extra keys are required at bind time.
+            -- The GENERIC_STRING short form (payload.type only) is sufficient: the
+            -- install dry-run bound pg_secret and the app served with no extra keys.
             RETURN '{"type": "CONFIGURATION", "payload": {"type": "GENERIC_STRING"}}';
         WHEN 'pg_eai' THEN
             -- The egress host:port is consumer-specific (their PG instance), so the
@@ -258,11 +276,16 @@ DECLARE
     spec      STRING;
     ddl       STRING;
     dollar    STRING;
+    auth_tok  STRING;
 BEGIN
     app_db    := CURRENT_DATABASE();
     db_schema := app_db || '.APP_PUBLIC';
     pool      := app_db || '_COMPUTE_POOL';
     wh        := app_db || '_WH';
+    -- Shared internal-hop token (see section 3); injected as the controller's
+    -- INTERNAL_AUTH_TOKEN env so it can authenticate the admin UI's role headers.
+    SELECT config_value INTO :auth_tok FROM app_public.internal_config
+        WHERE config_key = 'internal_auth_token';
     -- Built at runtime so no literal dollar-quote delimiter appears in this proc
     -- body (which is itself dollar-quoted); used to quote the inline service spec.
     dollar    := '$' || '$';
@@ -274,12 +297,14 @@ BEGIN
     env:
       COMPUTE_POOL: ' || pool || '
       IMAGE_REPO: <PROVIDER_DB>/<PROVIDER_SCHEMA>/<REPO>/mendix-base
+      MENDIX_BASE_IMAGE: /<PROVIDER_DB>/<PROVIDER_SCHEMA>/<REPO>/mendix-base:latest
       DB_SCHEMA: ' || db_schema || '
       PG_EAI: reference(''pg_eai'')
       QUERY_WAREHOUSE: ' || wh || '
       CONTROLLER_SERVICE_NAME: MENDIX_DEPLOY_CONTROLLER
       ADMIN_UI_SERVICE_NAME: MENDIX_DEPLOY_ADMIN_UI
       PRIVILEGED_ROLES: ACCOUNTADMIN
+      INTERNAL_AUTH_TOKEN: ' || auth_tok || '
     secrets:
     - snowflakeSecret:
         objectReference: ''pg_secret''
@@ -344,14 +369,19 @@ DECLARE
     spec      STRING;
     ddl       STRING;
     dollar    STRING;
+    auth_tok  STRING;
 BEGIN
     app_db    := CURRENT_DATABASE();
     db_schema := app_db || '.APP_PUBLIC';
     pool      := app_db || '_COMPUTE_POOL';
     wh        := app_db || '_WH';
+    -- Same shared internal-hop token as the controller (section 3); the admin UI
+    -- sends it as X-Internal-Auth so the controller trusts its operator-role headers.
+    SELECT config_value INTO :auth_tok FROM app_public.internal_config
+        WHERE config_key = 'internal_auth_token';
     dollar    := '$' || '$';   -- avoid a literal dollar-quote delimiter in this body
     -- Internal DNS: same-schema service reachable by its lowercased dashed name.
-    -- VERIFY this short form resolves inside a Native App namespace.
+    -- Validated in the install dry-run (admin UI reaches the controller this way).
     spec :=
 'spec:
   containers:
@@ -359,6 +389,7 @@ BEGIN
     image: /<PROVIDER_DB>/<PROVIDER_SCHEMA>/<REPO>/mendix-admin-ui:latest
     env:
       CONTROLLER_URL: http://mendix-deploy-controller:8080
+      INTERNAL_AUTH_TOKEN: ' || auth_tok || '
       STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "1024"
       DEPLOY_STAGE: "@' || db_schema || '.MENDIX_DEPLOY_STAGE"
       STREAMLIT_THEME_BASE: "dark"

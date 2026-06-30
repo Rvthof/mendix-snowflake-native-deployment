@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import textwrap
 import threading
 from typing import Any
@@ -86,7 +87,21 @@ def execute_sql(sql: str, params: tuple = ()) -> list[dict]:
         return cur.fetchall()
 
 
+# Schema-qualified plain identifier: letters, digits, underscore, $, dot
+# separators. No quotes, spaces, or semicolons, so a value interpolated here
+# cannot break out of the identifier position in the DDL below.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*$")
+
+
+def _assert_identifier(fqn: str) -> None:
+    if not _IDENTIFIER_RE.match(fqn):
+        raise ValueError(f"unsafe SQL identifier: {fqn!r}")
+
+
 def create_or_replace_secret(fqn: str, value: str) -> None:
+    # Backstop for the secret name: callers derive it from constant names that may
+    # originate in an uploaded PAD (untrusted), not only from validated API input.
+    _assert_identifier(fqn)
     escaped = value.replace("'", "''")
     execute_sql(f"CREATE OR REPLACE SECRET {fqn} TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'")
 
@@ -214,8 +229,11 @@ def set_caller_token_validity(name: str, secs: int = 1800) -> None:
 
 
 def get_service_logs(name: str, container: str = "mendix-app", lines: int = 100) -> str:
+    # Bind the arguments rather than interpolate: callers pass allowlisted service +
+    # container names today, but binding keeps this safe regardless of the source.
     rows = execute_sql(
-        f"SELECT SYSTEM$GET_SERVICE_LOGS('{_DB_SCHEMA}.{name}', 0, '{container}', {lines}) AS logs"
+        "SELECT SYSTEM$GET_SERVICE_LOGS(%s, 0, %s, %s) AS logs",
+        (f"{_DB_SCHEMA}.{name}", container, int(lines)),
     )
     if rows:
         return rows[0].get("LOGS", "")

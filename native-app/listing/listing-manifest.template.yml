@@ -4,7 +4,8 @@
 # Committable: the only environment-specific value (the consumer account
 # locators) is the <CONSUMER_ACCOUNTS> token, rendered by scripts/release.ps1
 # from native-app-config.json `consumerTargets` (format: ORG.ACCOUNT, comma
-# list -> YAML flow sequence).
+# list -> YAML flow sequence). Everything else here (profile name, terms link,
+# doc URL) is non-secret and matches the published sibling listing.
 #
 # This is consumed by:
 #   CREATE EXTERNAL LISTING MENDIX_SPCS_LISTING
@@ -18,27 +19,90 @@
 # reach APPROVED (plus the one-time container Product Security provider approval).
 # See PLAN-native-app-packaging.md section 9 (R1) and section 8.
 #
-# VERIFY-AT-RUN (flagged in the Phase 5 plan; confirm against the live
-# CREATE EXTERNAL LISTING error messages, not this template):
-#   - listing_terms.type: "OFFLINE" assumed (terms handled offline for an
-#     internal private listing). Other documented value is "STANDARD" (+ link).
-#   - subtitle: kept here; confirm whether it is mandatory for a private
-#     targeted listing (it is for public Marketplace listings).
-#   - auto_fulfillment: omitted. Required only for cross-cloud / cross-region
-#     fulfillment; a same-region target should not need it. Confirm at run.
+# Marketing copy + structure mirror the live published sibling listing
+# "Mendix Data Loader" (global_name GZTDZHHIE0), read from this same provider
+# account via DESCRIBE LISTING. Contacts/logo/company blurb are NOT set here:
+# they live on the shared provider profile referenced below, identical to the
+# Data Loader. The profile carries the support email (SA_Dev_Team@mendix.com),
+# supportUrl, privacyUrl, and the Mendix logo.
+#
+# VERIFY-AT-RUN (confirm against the live CREATE EXTERNAL LISTING messages,
+# since the sibling is a public Marketplace listing and this one is private +
+# targeted):
+#   - profile: confirm a private targeted listing accepts/requires the shared
+#     provider profile (public Marketplace listings require it).
+#   - categories: "CONNECTORS" kept (no better-fitting value found); confirm
+#     CREATE accepts it for a container/runtime app.
+#   - usage_examples: omitted. The sibling's example is a SQL query; this app is
+#     UI-driven, not a SQL-queryable data product. Confirm none is required.
+#   - subtitle: kept; confirm whether it is mandatory for a private listing.
+#   - auto_fulfillment: omitted. The sibling sets refresh_type
+#     SUB_DATABASE_WITH_REFERENCE_USAGE; confirm whether a targeted, same-region
+#     listing needs it.
 # =============================================================================
 
 title: "Mendix on Snowpark Container Services"
-subtitle: "Deploy and operate Mendix applications inside Snowflake"
+subtitle: "Run and operate Mendix applications natively in Snowflake"
 description: |
-  Provider-managed Native App that installs a deployment controller and admin UI
-  for running Mendix applications on Snowpark Container Services. The consumer
-  grants three account privileges and binds a Postgres secret and external access
-  integration at install; the app provisions its own compute pool and warehouse
-  and deploys per-app Mendix services.
+  Provider-managed Snowflake Native App for deploying and operating Mendix applications on
+  Snowpark Container Services. Built on Snowflake's Native App Framework with Containers, it
+  installs a deployment controller and an admin UI; from there an operator registers Mendix
+  apps, uploads their deployment archives, and the app brings each one up as its own container
+  service. The consumer grants three account privileges and binds a Postgres secret and an
+  external access integration at install; the app provisions its own compute pool and
+  warehouse and deploys per-app Mendix services.
+
+  This application is a standard part of the Mendix Platform and therefore our service-level
+  agreements (SLAs) apply here as well. For more information refer to the Mendix Support Guide
+  (https://docs.mendix.com/support/).
+
+categories:
+- "CONNECTORS"
+
+resources:
+  documentation: "https://github.com/Rvthof/mendix-snowflake-native-deployment"
+
+# Shared Mendix provider profile (global name GZTDZHHIDF). Inherits the company
+# name, description, logo, supportUrl, privacyUrl, and the support/technical
+# contact email (SA_Dev_Team@mendix.com). Do NOT re-enter contacts on the listing.
+profile: "MENDIX_6A176635_539A_4448_8BFA_A0252088E1D5"
 
 listing_terms:
-  type: "OFFLINE"
+  type: "CUSTOM"
+  link: "https://www.mendix.com/legal/platform-usage/mendix-basic-eula/"
 
+business_needs:
+- type: "CUSTOM"
+  name: "Application Deployment"
+  description: |
+    Deploy and operate Mendix low-code applications inside Snowflake, co-located with the data
+    they use, without standing up separate infrastructure. The app installs a controller and
+    an admin UI, provisions its own compute pool and warehouse, and runs each registered Mendix
+    app as its own container service on Snowpark Container Services.
+
+data_attributes:
+  geography:
+    geo_option: "NOT_APPLICABLE"
+  features:
+  - "Mendix application"
+  - "Container Services"
+
+# PHASE A (now): private/targeted, locked to the accounts in consumerTargets.
+# Create with PUBLISH = FALSE REVIEW = TRUE. This passes NAAAPS (the security
+# gate is on the package version, not the listing).
+#
+# PHASE B (later, to go public): going private->public is NOT `ADD TARGETS`
+# (that only adds more accounts to a targeted listing). Replace the whole targets
+# section via a full-manifest alter on the existing listing:
+#     ALTER LISTING MENDIX_SPCS_LISTING AS $$
+#       ...full manifest with:
+#       targets:
+#         regions:
+#         - "ALL"
+#     $$ PUBLISH = TRUE REVIEW = TRUE;
+# This reuses the package's NAAAPS approval (no security re-scan); only a separate,
+# lighter Marketplace Ops content review applies. Use the V1 manifest schema (this
+# file); do not mix in the V2 external_targets/locations form. See the plan's
+# "Two-phase sequencing" section.
 targets:
   accounts: <CONSUMER_ACCOUNTS>

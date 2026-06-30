@@ -64,6 +64,10 @@ $registry = (& snow spcs image-registry url --connection $conn).Trim()
 $repoUrl  = "$registry/$repoFqn".ToLower()
 
 Write-Host "[2/3] Building and pushing images to $repoUrl ..." -ForegroundColor Cyan
+# Capture each pushed image's immutable @sha256 digest so the staged version pins
+# to it instead of the mutable :latest tag (security: a frozen app version must
+# always run the exact image that passed the NAAAPS review).
+$digests = @{}
 foreach ($name in $images.Keys) {
     $context = Join-Path $repoRoot $images[$name]
     Write-Host "  $name  (context: $($images[$name]))" -ForegroundColor DarkGray
@@ -75,6 +79,15 @@ foreach ($name in $images.Keys) {
     & docker tag $name "$repoUrl/${name}:latest"
     & docker push "$repoUrl/${name}:latest"
     if ($LASTEXITCODE -ne 0) { Write-Error "Push failed: $name"; exit 1 }
+    # RepoDigests is populated after a successful push: "<repoUrl>/<name>@sha256:...".
+    $repoDigest = (& docker inspect --format '{{index .RepoDigests 0}}' "$repoUrl/${name}:latest").Trim()
+    if ($repoDigest -match '(@sha256:[0-9a-f]+)$') {
+        $digests[$name] = $Matches[1]     # keep the leading "@sha256:..."
+        Write-Host "    pinned: $name$($digests[$name])" -ForegroundColor DarkGray
+    } else {
+        Write-Error "Could not resolve pushed digest for ${name} (docker inspect returned '$repoDigest')."
+        exit 1
+    }
 }
 
 # ---- stage a deploy copy with tokens resolved --------------------------------
@@ -90,6 +103,14 @@ foreach ($f in @("app/manifest.yml", "app/setup_script.sql")) {
     $p = Join-Path $buildDir $f
     $text = Get-Content $p -Raw
     $text = $text.Replace("<PROVIDER_DB>", $pdb).Replace("<PROVIDER_SCHEMA>", $pschema).Replace("<REPO>", $repo)
+    # Pin every "<image>:latest" reference (manifest allow-list, the controller and
+    # admin-ui service images, and the controller's MENDIX_BASE_IMAGE env) to the
+    # immutable digest just pushed. The committed source keeps :latest for dev; only
+    # the frozen .build/ version is digest-pinned. (The IMAGE_REPO env has no :latest
+    # and is left as the repo path.)
+    foreach ($name in $images.Keys) {
+        $text = $text.Replace("${name}:latest", "${name}$($digests[$name])")
+    }
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($p, $text, $utf8NoBom)
 }
@@ -97,5 +118,5 @@ foreach ($f in @("app/manifest.yml", "app/setup_script.sql")) {
 Write-Host ""
 Write-Host "Done!" -ForegroundColor Green
 Write-Host "  Images:  $repoUrl/{mendix-deploy-controller,mendix-admin-ui,mendix-base}:latest"
-Write-Host "  Staged:  $buildDir"
+Write-Host "  Staged:  $buildDir  (image refs pinned to @sha256 digests)"
 Write-Host "  Deploy:  snow app run -p `"$buildDir`" --connection $conn" -ForegroundColor Yellow

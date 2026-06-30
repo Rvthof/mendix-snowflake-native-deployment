@@ -12,6 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+# A Mendix constant's qualified name (Module.Constant) is always a dotted
+# identifier. We turn it into a Snowflake secret identifier (MX_CONST_...), so it
+# must contain nothing that could break out of an identifier position in DDL.
+# Enforced here (PAD is untrusted input) and re-used by the API models.
+CONSTANT_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_.]*$"
+_CONSTANT_NAME_RE = re.compile(CONSTANT_NAME_PATTERN)
+
 
 @dataclass
 class PadConstant:
@@ -48,6 +55,11 @@ def _build_constants(defaults: dict[str, str], env_vars: dict[str, str]) -> list
     result = []
     for name, default in defaults.items():
         if name in env_vars:
+            if not _CONSTANT_NAME_RE.match(name):
+                raise ValueError(
+                    f"PAD constant name {name!r} is not a valid identifier "
+                    f"(must match {CONSTANT_NAME_PATTERN}); refusing to derive a secret name from it"
+                )
             secret_name = "MX_CONST_" + name.replace(".", "_").upper()
             result.append(PadConstant(
                 name=name,

@@ -1,9 +1,26 @@
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .pad_parser import CONSTANT_NAME_PATTERN
+
+_CONSTANT_NAME_RE = re.compile(CONSTANT_NAME_PATTERN)
+
+
+def _validate_constant_names(constants: dict[str, str]) -> dict[str, str]:
+    # Constant names become Snowflake secret identifiers (MX_CONST_<name>), so a
+    # name with quotes/spaces/semicolons could break out of the identifier
+    # position in CREATE SECRET. Reject anything that is not a dotted identifier.
+    for key in constants:
+        if not _CONSTANT_NAME_RE.match(key):
+            raise ValueError(
+                f"invalid constant name {key!r}: must match {CONSTANT_NAME_PATTERN}"
+            )
+    return constants
 
 
 class ResourceTier(str, Enum):
@@ -21,7 +38,9 @@ RESOURCE_TIERS = {
 
 class CreateAppRequest(BaseModel):
     name: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9_]*$", description="App identifier (letters, digits, underscores)")
-    pg_database: str
+    # Flows into the runtime's CREATE DATABASE (shell psql) and the service spec;
+    # constrain to an identifier so it cannot inject SQL/shell metacharacters.
+    pg_database: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     admin_password: str
     resource_tier: ResourceTier = ResourceTier.medium
     use_caller_rights: bool = False
@@ -30,9 +49,13 @@ class CreateAppRequest(BaseModel):
     # caller can't inject SQL via this field (the UI restricts it, the API didn't).
     owner_role: str = Field(default="MENDIX_ADMIN_OPERATOR_ROLE", pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
 
+    _check_constants = field_validator("constants")(_validate_constant_names)
+
 
 class UpdateConstantsRequest(BaseModel):
     constants: dict[str, str]
+
+    _check_constants = field_validator("constants")(_validate_constant_names)
 
 
 class UpdateSpecRequest(BaseModel):
@@ -61,6 +84,9 @@ class AppStatusResponse(BaseModel):
 
 
 class UpdateComputePoolRequest(BaseModel):
-    min_nodes: Optional[int] = Field(None, ge=1)
-    max_nodes: Optional[int] = Field(None, ge=1)
+    # Upper bounds cap runaway compute scaling (cost / compute-abuse guard). 10 nodes
+    # of the pool's small instance family is ample headroom for Mendix workloads; raise
+    # deliberately if a consumer genuinely needs more.
+    min_nodes: Optional[int] = Field(None, ge=1, le=10)
+    max_nodes: Optional[int] = Field(None, ge=1, le=10)
     auto_suspend_secs: Optional[int] = Field(None, ge=0)

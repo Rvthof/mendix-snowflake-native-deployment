@@ -5,7 +5,10 @@ Two caller types reach the controller on different network paths:
 - The admin UI calls over the internal service-to-service endpoint. SPCS injects
   no identity there, so the admin UI vouches for the operator's roles in the
   ``X-Operator-Roles`` header (it derived them from Snowflake under the operator's
-  identity). Trusted at the service level.
+  identity). Because the controller endpoint is public, that header is honoured only
+  when the request also carries the shared ``X-Internal-Auth`` token both in-app
+  services hold (``INTERNAL_AUTH_TOKEN`` env, set by setup_script.sql); otherwise a
+  tokenless caller gets no roles.
 - Machine clients (e.g. ``upload-pad.ps1``) call the public endpoint with a PAT.
   SPCS injects ``Sf-Context-Current-User-Token`` (because the service runs with
   ``executeAsCaller: true``), which is Snowflake-asserted and cannot be forged.
@@ -17,6 +20,7 @@ The discriminator is the presence of the caller token. See the memory
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -32,7 +36,16 @@ logger = logging.getLogger(__name__)
 _CALLER_TOKEN_HEADER = "Sf-Context-Current-User-Token"
 _OPERATOR_HEADER = "X-Operator"
 _OPERATOR_ROLES_HEADER = "X-Operator-Roles"
+_INTERNAL_AUTH_HEADER = "X-Internal-Auth"
 _SERVICE_TOKEN_FILE = "/snowflake/session/token"
+
+# Shared secret proving a request is the in-app admin UI on the internal hop (set
+# as an env on both services by setup_script.sql). The controller endpoint is
+# public, so the X-Operator-Roles header is only honoured when this token matches;
+# without it (or on mismatch) a tokenless caller gets no roles. When unset (e.g. an
+# install that predates this), the internal path stays trusted as before. An empty
+# value is treated as unset so a mis-provision can't make an empty token match.
+_INTERNAL_AUTH_TOKEN = os.environ.get("INTERNAL_AUTH_TOKEN") or None
 
 # Caller identity (user + roles) is resolved from Snowflake on the public PAT
 # path. upload-pad.ps1 polls every 10s, so without a cache each poll pays a full
@@ -60,6 +73,10 @@ def _privileged_roles() -> frozenset[str]:
 
 # Roles that may act on any app regardless of owner_role (e.g. the deploy
 # automation, whose single restricted role cannot be expressed per-app).
+# Default is ACCOUNTADMIN (set in setup_script.sql): the consumer's break-glass
+# admin already has full control of the app and its services, so treating it as the
+# cross-app operator adds no privilege it lacks. A consumer wanting a narrower
+# privileged operator can set PRIVILEGED_ROLES to a purpose-built account role.
 PRIVILEGED_ROLES = _privileged_roles()
 
 
@@ -128,6 +145,19 @@ def resolve_caller(request: Request) -> CallerIdentity:
         except Exception:
             logger.exception("Failed to resolve caller identity from Snowflake")
             return CallerIdentity(user=None, roles=set())
+    # No Snowflake caller token: this should only be the internal admin-UI hop.
+    # The endpoint is public, so trust the vouched-for X-Operator-Roles only when the
+    # request proves it is the in-app admin UI by presenting the shared internal token.
+    if _INTERNAL_AUTH_TOKEN is not None:
+        presented = request.headers.get(_INTERNAL_AUTH_HEADER) or ""
+        if not hmac.compare_digest(presented, _INTERNAL_AUTH_TOKEN):
+            logger.warning("Tokenless request without a valid internal auth token; denying roles")
+            return CallerIdentity(user=None, roles=set())
+    else:
+        logger.warning(
+            "INTERNAL_AUTH_TOKEN not set; trusting X-Operator-Roles on the internal path. "
+            "Provision the token (setup_script.sql) to harden the public endpoint."
+        )
     raw = request.headers.get(_OPERATOR_ROLES_HEADER, "")
     roles = {r.strip().upper() for r in raw.split(",") if r.strip()}
     return CallerIdentity(user=request.headers.get(_OPERATOR_HEADER) or None, roles=roles)

@@ -1,6 +1,8 @@
 """Thin httpx wrapper for the Mendix deployment controller's REST API."""
 from __future__ import annotations
 
+import os
+
 import httpx
 
 DEFAULT_TIMEOUT = 30.0
@@ -42,6 +44,12 @@ class ControllerClient:
         headers = {"X-Operator": operator}
         if roles:
             headers["X-Operator-Roles"] = ",".join(roles)
+        # Shared internal-hop token so the controller trusts the operator-role headers
+        # above (the controller endpoint is public; see Controller/app/auth.py). Set on
+        # both services by setup_script.sql; absent only on installs predating it.
+        internal_token = os.environ.get("INTERNAL_AUTH_TOKEN")
+        if internal_token:
+            headers["X-Internal-Auth"] = internal_token
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=DEFAULT_TIMEOUT,
