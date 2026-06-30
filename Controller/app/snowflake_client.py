@@ -193,8 +193,12 @@ def get_service_endpoint(name: str) -> str | None:
     rows = execute_sql(f"SHOW ENDPOINTS IN SERVICE {_DB_SCHEMA}.{name}")
     for row in rows:
         url = row.get("ingress_url")
-        if url:
-            return f"https://{url}" if not url.startswith("https://") else url
+        # While ingress is still provisioning, SHOW ENDPOINTS returns a
+        # human-readable message ("Endpoints provisioning in progress. ...")
+        # in this column rather than a host. A real host has a dot and no
+        # spaces; anything else means "not available yet".
+        if url and "." in url and " " not in url:
+            return url if url.startswith("https://") else f"https://{url}"
     return None
 
 

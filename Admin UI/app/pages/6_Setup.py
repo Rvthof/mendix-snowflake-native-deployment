@@ -168,6 +168,35 @@ st.info(
     f"`{ingress_rule}` with `SYSTEM$GET_SNOWFLAKE_EGRESS_IP_RANGES()` before they lapse."
 )
 
+# --- Step 6: grant the app access to the data each Mendix app queries --------
+st.subheader("6 - Grant the app read access to the Snowflake data your Mendix apps query")
+st.caption(
+    "Per Mendix app, as needed - not a one-time account step. The controller and "
+    "per-app services run with restricted caller's rights (executeAsCaller): a query "
+    "against your Snowflake objects succeeds only when BOTH the operator running it "
+    "AND this application object hold the privilege. Grant the app read access to the "
+    "databases, schemas, and objects each Mendix app reads, plus USAGE on its query "
+    "warehouse."
+)
+st.code(
+    f"""-- Replace the data DB / schema / warehouse with the ones your Mendix app queries.
+GRANT USAGE  ON DATABASE <data_db>                           TO APPLICATION {app_name};
+GRANT USAGE  ON SCHEMA   <data_db>.<data_schema>             TO APPLICATION {app_name};
+GRANT SELECT ON ALL TABLES IN SCHEMA <data_db>.<data_schema> TO APPLICATION {app_name};
+GRANT SELECT ON ALL VIEWS  IN SCHEMA <data_db>.<data_schema> TO APPLICATION {app_name};
+GRANT USAGE  ON WAREHOUSE <query_warehouse>                  TO APPLICATION {app_name};""",
+    language="sql",
+)
+st.warning(
+    "Without these grants the app reports: *the owning application must have at least "
+    "one CALLER privilege granted on TABLE ...*. Snowflake does not allow FUTURE grants "
+    "to an application (`Future grant on objects of type TABLE to APPLICATION is "
+    "restricted`), so re-run the ALL TABLES / ALL VIEWS grants after you add new objects "
+    "the app must read. Run these grants before the app first connects - a privilege "
+    "added after the app has opened its Snowflake session may not be picked up until it "
+    "refreshes the connection."
+)
+
 st.divider()
 
 # --- Verify ------------------------------------------------------------------

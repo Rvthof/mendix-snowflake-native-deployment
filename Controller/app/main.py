@@ -284,6 +284,30 @@ def health():
     return {"status": "ok"}
 
 
+def _endpoint_is_real(url: str | None) -> bool:
+    """A real ingress host has a dot and no spaces; the provisioning placeholder
+    ("Endpoints provisioning in progress. ...") has spaces."""
+    return bool(url) and " " not in url and "." in url
+
+
+def _effective_endpoint(record: AppRecord, svc_status: str | None) -> str | None:
+    """Return the app's endpoint, healing a stale/empty stored value.
+
+    endpoint_url is captured once at deploy time, but SPCS provisions ingress
+    asynchronously after the service reports RUNNING, so that capture is usually
+    empty (or, from older builds, a stored provisioning message). When the
+    service is RUNNING and we have no real stored endpoint, fetch the live one
+    and persist it so later reads stay cheap."""
+    if _endpoint_is_real(record.endpoint_url):
+        return record.endpoint_url
+    if svc_status == "RUNNING":
+        live = sf.get_service_endpoint(record.service_name)
+        if live:
+            registry.update_app(record.name, {"endpoint_url": live})
+            return live
+    return None
+
+
 @app.get("/apps")
 def list_apps(roles: set[str] = Depends(caller_roles)):
     apps = registry.list_apps()
@@ -293,7 +317,11 @@ def list_apps(roles: set[str] = Depends(caller_roles)):
         if not auth.authorize(a.owner_role, roles):
             continue
         svc_status = statuses.get(a.service_name)
-        result.append({**a.model_dump(), "service_status": svc_status})
+        result.append({
+            **a.model_dump(),
+            "service_status": svc_status,
+            "endpoint_url": _effective_endpoint(a, svc_status),
+        })
     return result
 
 
@@ -373,6 +401,7 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
 def get_app(name: str, roles: set[str] = Depends(caller_roles)):
     record = _record_for_read(name, roles)
     svc_status = sf.show_service_status(record.service_name)
+    record.endpoint_url = _effective_endpoint(record, svc_status)
     return AppStatusResponse(app=record, service_status=svc_status)
 
 
