@@ -69,7 +69,6 @@ A controller-based deployment toolkit for running Mendix apps on SPCS:
 
 - Mendix Studio Pro 10.24.19+ or 11.6.5+ (Portable App Distribution export)
 - Snowflake account with ACCOUNTADMIN access
-- Docker (Rancher Desktop with `dockerd (moby)` engine, or Docker Desktop)
 - Snowflake CLI (`snow`) 3.x+
 - PowerShell 5.1+
 

@@ -2,5 +2,9 @@
   "snowConnection": "<snow-cli-connection-name>",
   "providerDb": "<PROVIDER_DATABASE>",
   "providerSchema": "<PROVIDER_SCHEMA>",
-  "repo": "MENDIX_NATIVE_REPO"
+  "repo": "MENDIX_NATIVE_REPO",
+  "version": "v1",
+  "distribution": "INTERNAL",
+  "listingName": "MENDIX_SPCS_LISTING",
+  "consumerTargets": ["<ORG.CONSUMER_ACCOUNT>"]
 }

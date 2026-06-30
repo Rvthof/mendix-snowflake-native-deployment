@@ -1,0 +1,44 @@
+# =============================================================================
+# Private (targeted) listing manifest for the Mendix-on-SPCS Native App.
+#
+# Committable: the only environment-specific value (the consumer account
+# locators) is the <CONSUMER_ACCOUNTS> token, rendered by scripts/release.ps1
+# from native-app-config.json `consumerTargets` (format: ORG.ACCOUNT, comma
+# list -> YAML flow sequence).
+#
+# This is consumed by:
+#   CREATE EXTERNAL LISTING MENDIX_SPCS_LISTING
+#     APPLICATION PACKAGE MENDIX_SPCS_PKG
+#     AS '<rendered listing-manifest.yml>'
+#     PUBLISH = FALSE REVIEW = TRUE;
+# The application package is attached by the SQL clause, NOT here. The *version*
+# served to consumers comes from the package's release directive, NOT this file.
+#
+# GATED: only used in Phase 5b, after DISTRIBUTION=EXTERNAL and NAAAPS review
+# reach APPROVED (plus the one-time container Product Security provider approval).
+# See PLAN-native-app-packaging.md section 9 (R1) and section 8.
+#
+# VERIFY-AT-RUN (flagged in the Phase 5 plan; confirm against the live
+# CREATE EXTERNAL LISTING error messages, not this template):
+#   - listing_terms.type: "OFFLINE" assumed (terms handled offline for an
+#     internal private listing). Other documented value is "STANDARD" (+ link).
+#   - subtitle: kept here; confirm whether it is mandatory for a private
+#     targeted listing (it is for public Marketplace listings).
+#   - auto_fulfillment: omitted. Required only for cross-cloud / cross-region
+#     fulfillment; a same-region target should not need it. Confirm at run.
+# =============================================================================
+
+title: "Mendix on Snowpark Container Services"
+subtitle: "Deploy and operate Mendix applications inside Snowflake"
+description: |
+  Provider-managed Native App that installs a deployment controller and admin UI
+  for running Mendix applications on Snowpark Container Services. The consumer
+  grants three account privileges and binds a Postgres secret and external access
+  integration at install; the app provisions its own compute pool and warehouse
+  and deploys per-app Mendix services.
+
+listing_terms:
+  type: "OFFLINE"
+
+targets:
+  accounts: <CONSUMER_ACCOUNTS>

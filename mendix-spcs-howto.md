@@ -42,8 +42,6 @@ This guide covers the controller-based deployment model. The controller is a Fas
 | Requirement | Notes |
 |-------------|-------|
 | Mendix Studio Pro 10.24.19+ or 11.6.5+ | PAD export required |
-| Docker (Rancher Desktop or Docker Desktop) | Needed for one-time base image build |
-| Rancher Desktop: use `dockerd (moby)` engine, not `containerd` | |
 | Snowflake CLI (`snow`) 3.x+ | `pip install snowflake-cli-labs` |
 | PowerShell 5.1+ | Ships with Windows 10/11 |
 

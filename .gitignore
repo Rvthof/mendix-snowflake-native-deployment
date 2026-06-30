@@ -2,6 +2,8 @@ Controller/controller-config.json
 Admin UI/admin-ui-config.json
 native-app/scripts/native-app-config.json
 native-app/.build/
+# Rendered listing manifest carries real consumer account locators; template is committed
+native-app/listing/listing-manifest.yml
 service_spec.yaml
 .snowflake
 __pycache__/
