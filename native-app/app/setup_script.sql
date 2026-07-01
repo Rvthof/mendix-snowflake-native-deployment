@@ -382,6 +382,10 @@ BEGIN
     dollar    := '$' || '$';   -- avoid a literal dollar-quote delimiter in this body
     -- Internal DNS: same-schema service reachable by its lowercased dashed name.
     -- Validated in the install dry-run (admin UI reaches the controller this way).
+    -- Plain HTTP is intentional here: this call never leaves the app''s own compute
+    -- pool (SPCS''s private pod network, not internet-routable), and it is
+    -- authenticated via INTERNAL_AUTH_TOKEN below. Accepted risk, not an oversight -
+    -- see the security best-practices review in PLAN-5b-external-listing.md.
     spec :=
 'spec:
   containers:

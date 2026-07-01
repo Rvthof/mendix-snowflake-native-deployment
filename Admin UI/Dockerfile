@@ -5,6 +5,8 @@ WORKDIR /app
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
+RUN useradd --system --no-create-home appuser && chown -R appuser:appuser /app
+USER appuser
 EXPOSE 8501
 CMD ["streamlit", "run", "app/streamlit_app.py", \
      "--server.address=0.0.0.0", \
