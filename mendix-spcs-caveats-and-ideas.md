@@ -30,6 +30,14 @@ Without a production license, the Mendix runtime terminates after ~2 hours. SPCS
 
 **Mitigation:** Add license env vars (`RUNTIME_LICENSE_ID`, `RUNTIME_LICENSE_KEY`). License validation may require egress to `licensing.mendix.com:443` via an EAI.
 
+**Native App implication (flagged 2026-07-01):** the packaged Native App (`native-app/`) does
+not implement this today - `manifest.yml` only declares the `pg_eai` reference, no egress path to
+`licensing.mendix.com` exists, so apps deployed through the Native App currently run
+trial-licensed only (the ~2h restart cycle above). Adding production licensing would need a new
+declared reference + consumer-bound EAI (same pattern as `pg_eai`), which would also add a second
+egress destination to the answers given in Snowflake's security questionnaire (currently answered
+as "Postgres only"). Revisit before promising production licenses on the Native App path.
+
 ---
 
 ### SPCS egress IP ranges have an expiry date

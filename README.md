@@ -37,40 +37,7 @@ A controller-based deployment toolkit for running Mendix apps on SPCS:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  SPCS: MENDIX_DEPLOY_CONTROLLER                                     │
-│  FastAPI service managing all Mendix app deployments                │
-│  Endpoint: public (PAT-authenticated)                               │
-└─────────────────────────────┬───────────────────────────────────────┘
-                              │ creates / alters / suspends / resumes
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-   │  app service │  │  app service │  │  ...         │
-   │ mendix-base  │  │ mendix-base  │  │              │
-   └──────────────┘  └──────────────┘  └──────────────┘
-              │               │
-              └───────────────┘
-                      │
-              Shared: compute pool, Postgres instance, EAI,
-                      MENDIX_DEPLOY_STAGE (PAD zips)
-```
-
-- **Compute**: SPCS compute pool (CPU_X64_S or larger), shared across all app services
-- **Database**: Snowflake Postgres instance; one database per app, auto-created at startup
-- **File storage**: Snowflake internal stage mounted as a volume (files are queryable from SQL)
-- **Auth**: Snowflake OAuth on the endpoint; SnowflakeSSO module maps Snowflake users to Mendix users
-- **End-user access**: each app's public endpoint is gated by a per-app account role (`APP_<NAME>_USER`); only members of that role, the app's `owner_role`, or a privileged role reach the app. Membership is managed in the IdP via SCIM. See the howto's [Access model](mendix-spcs-howto.md#access-model-multi-tenant-isolation).
-- **Data access**: Caller's rights with compound token; queries execute as the logged-in user
-- **Deploy**: PAD zip uploaded to stage via Snow CLI; controller alters or restarts the service in-place, preserving the endpoint URL
-
-## Native App Architecture (packaged distribution)
-
-The section above describes the standalone, direct-SPCS toolkit (`setup.ps1` / PAT-authenticated
-controller). Packaged as a **Snowflake Native App with Containers** (`native-app/`), the
-architecture and information flow are different — this diagram is the one to reference for the
-Native App security review:
+Packaged as a **Snowflake Native App with Containers** (`native-app/`):
 
 ```mermaid
 flowchart TB
