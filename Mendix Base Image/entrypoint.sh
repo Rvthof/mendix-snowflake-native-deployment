@@ -12,21 +12,22 @@ if [ ! -f "$PAD_STAGE_PATH" ]; then
     exit 1
 fi
 
-# Extract PAD
+# Extract PAD. Under /mendix (not filesystem root) since the container runs as the
+# non-root mendixuser, which only has write access under WORKDIR /mendix.
 echo "Extracting PAD from $PAD_STAGE_PATH..."
-rm -rf /mendix-pad /mendix-pad-extract
-unzip -q "$PAD_STAGE_PATH" -d /mendix-pad-extract/
+rm -rf /mendix/pad /mendix/pad-extract
+unzip -q "$PAD_STAGE_PATH" -d /mendix/pad-extract/
 
 # Handle single top-level directory inside zip
-children=(/mendix-pad-extract/*)
+children=(/mendix/pad-extract/*)
 if [ ${#children[@]} -eq 1 ] && [ -d "${children[0]}" ]; then
-    mv "${children[0]}" /mendix-pad
-    rmdir /mendix-pad-extract
+    mv "${children[0]}" /mendix/pad
+    rmdir /mendix/pad-extract
 else
-    mv /mendix-pad-extract /mendix-pad
+    mv /mendix/pad-extract /mendix/pad
 fi
 
-chmod +x /mendix-pad/bin/start
+chmod +x /mendix/pad/bin/start
 
 # Read file-based secrets from /snowflake/secrets/ and export as env vars
 SECRETS_DIR="/secrets"
@@ -42,7 +43,7 @@ if [ -d "$SECRETS_DIR" ]; then
     fi
 
     # Dynamic constant secrets: mx_const_<module>_<name> -> read variables.conf for env var mapping
-    VARS_CONF="/mendix-pad/etc/constants/variables.conf"
+    VARS_CONF="/mendix/pad/etc/constants/variables.conf"
     if [ -f "$VARS_CONF" ]; then
         while IFS= read -r line; do
             # Match: "Module.Name" = ${?ENV_VAR_NAME}
@@ -97,4 +98,4 @@ if [ -n "$DBNAME" ] && [ "$DBNAME" != "postgres" ]; then
     unset PGPASSWORD PGSSLMODE
 fi
 
-exec /mendix-pad/bin/start /mendix-pad/etc/Default
+exec /mendix/pad/bin/start /mendix/pad/etc/Default

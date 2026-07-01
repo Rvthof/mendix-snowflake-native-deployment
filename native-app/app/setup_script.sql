@@ -320,6 +320,8 @@ BEGIN
     source: stage
     stageConfig:
       name: "@' || db_schema || '.MENDIX_DEPLOY_STAGE"
+    uid: 999
+    gid: 999
   endpoints:
   - name: controller-api
     port: 8080

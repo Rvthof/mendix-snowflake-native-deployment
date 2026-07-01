@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import tempfile
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -13,7 +11,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 import yaml
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from . import activity, auth, registry, snowflake_client as sf
@@ -211,6 +209,11 @@ def _build_spec(
                     "name": "filestorage",
                     "source": "stage",
                     "stageConfig": {"name": f"@{_filestorage_stage(app_name)}"},
+                    # mendix-base runs as the non-root mendixuser (uid/gid 999, set in its
+                    # Dockerfile); without this the stage mount is root-owned and
+                    # RUNTIME_PARAMS_UPLOADEDFILESPATH is not writable by the container.
+                    "uid": 999,
+                    "gid": 999,
                 },
                 {
                     "name": "deploy-stage",
@@ -544,28 +547,6 @@ def _run_deploy(name: str, pad_path: str, record: AppRecord,
         except Exception:
             pass
         logger.exception("Deploy failed for %s", name)
-
-
-@app.post("/apps/{name}/deploy", status_code=202)
-def deploy_pad(name: str, pad_file: UploadFile = File(...),
-               background_tasks: BackgroundTasks = None,
-               roles: set[str] = Depends(caller_roles)):
-    """Upload a PAD zip. For large PADs (>50 MB) use snow stage copy + /trigger-deploy instead."""
-    _record_for_mutation(name, roles)
-    dest_dir = os.path.join(DEPLOY_STAGE_MOUNT, "apps", name)
-    os.makedirs(dest_dir, exist_ok=True)
-    dest_path = os.path.join(dest_dir, "current.zip")
-
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        shutil.copyfileobj(pad_file.file, tmp)
-        tmp_path = tmp.name
-    shutil.copy2(tmp_path, dest_path)
-    os.unlink(tmp_path)
-
-    record, pad_constants, new_constants = _prepare_deploy(name, dest_path)
-    registry.update_app(name, {"last_deploy_status": "DEPLOYING"})
-    background_tasks.add_task(_run_deploy, name, dest_path, record, pad_constants, new_constants)
-    return {"status": "DEPLOYING"}
 
 
 def _resolve_staged_pad(name: str) -> str | None:

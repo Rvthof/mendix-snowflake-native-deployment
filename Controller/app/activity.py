@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 _TABLE = f"{os.environ['DB_SCHEMA']}.MENDIX_ACTIVITY"
 
 _ACTION_PATTERNS = [
-    (re.compile(r"^/apps/([^/]+)/deploy$"), "deploy"),
     (re.compile(r"^/apps/([^/]+)/trigger-deploy$"), "deploy"),
     (re.compile(r"^/apps/([^/]+)/suspend$"), "suspend"),
     (re.compile(r"^/apps/([^/]+)/resume$"), "resume"),

@@ -622,15 +622,15 @@ Repeat for each app service. The compute pool will idle-suspend when all service
 
 ## Appendix: What `mendix-base` Contains
 
-The base image (`Mendix Base Image/Dockerfile`) is Eclipse Temurin JDK 21 plus `unzip` and `postgresql-client`. There is no Mendix app baked in. The `entrypoint.sh` at startup:
+The base image (`Mendix Base Image/Dockerfile`) is Eclipse Temurin JRE 21 (a JDK is a Studio Pro dev-time concern, not needed to run a deployed app) plus `unzip` and `postgresql-client`, running as a non-root user. There is no Mendix app baked in. The `entrypoint.sh` at startup:
 
-1. Reads `$PAD_STAGE_PATH` and extracts the PAD zip to `/mendix-pad/`
+1. Reads `$PAD_STAGE_PATH` and extracts the PAD zip to `/mendix/pad/` (under the non-root user's writable WORKDIR, not filesystem root)
 2. Reads file-based secrets from `/secrets/` and maps them to env vars:
    - `pg_pass` → `RUNTIME_PARAMS_DATABASEPASSWORD`
    - `admin_pass` → `M2EE_ADMIN_PASS` and `RUNTIME_ADMINUSER_PASSWORD`
    - `mx_const_<module>_<name>` → the env var from the PAD's `variables.conf`
 3. Resolves `{SNOWFLAKE_HOST}` placeholder in any env var (for JDBC URLs)
 4. Auto-creates the Postgres database if it does not exist (using `psql`)
-5. Executes `/mendix-pad/bin/start /mendix-pad/etc/Default`
+5. Executes `/mendix/pad/bin/start /mendix/pad/etc/Default`
 
 App constants follow the HOCON naming in `etc/constants/variables.conf`. The variable name is case-sensitive and has no extra underscores between words (e.g., `RUNTIME_PARAMS_DATABASETYPE`, not `RUNTIME_PARAMS_DATABASE_TYPE`).

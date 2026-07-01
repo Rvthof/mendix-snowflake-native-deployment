@@ -89,24 +89,6 @@ class ControllerClient:
     def trigger_deploy(self, name: str) -> dict:
         return self._request("POST", f"/apps/{name}/trigger-deploy").json()
 
-    def deploy_pad(self, name: str, uploaded_file) -> dict:
-        """Forward a Streamlit UploadedFile to the controller's deploy endpoint."""
-        files = {
-            "pad_file": (
-                uploaded_file.name,
-                uploaded_file.getvalue(),
-                "application/zip",
-            )
-        }
-        r = self._client.post(
-            f"/apps/{name}/deploy",
-            files=files,
-            timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
-        )
-        if r.status_code >= 400:
-            raise ControllerError(r.status_code, _detail(r))
-        return r.json()
-
     def update_constants(self, name: str, constants: dict) -> dict:
         return self._request("PUT", f"/apps/{name}/constants", json={"constants": constants}).json()
 
