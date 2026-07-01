@@ -65,6 +65,55 @@ A controller-based deployment toolkit for running Mendix apps on SPCS:
 - **Data access**: Caller's rights with compound token; queries execute as the logged-in user
 - **Deploy**: PAD zip uploaded to stage via Snow CLI; controller alters or restarts the service in-place, preserving the endpoint URL
 
+## Native App Architecture (packaged distribution)
+
+The section above describes the standalone, direct-SPCS toolkit (`setup.ps1` / PAT-authenticated
+controller). Packaged as a **Snowflake Native App with Containers** (`native-app/`), the
+architecture and information flow are different — this diagram is the one to reference for the
+Native App security review:
+
+```mermaid
+flowchart TB
+    Operator(["Operator<br/>(browser)"])
+    EndUser(["End user<br/>(browser)"])
+
+    subgraph Consumer["Consumer's Snowflake Account"]
+        subgraph App["Application: MENDIX_SPCS_APP"]
+            AdminUI["Admin UI (Streamlit)<br/>public endpoint :8501<br/>executeAsCaller"]
+            Controller["Controller (FastAPI)<br/>public endpoint :8080<br/>executeAsCaller"]
+            Stage[("MENDIX_DEPLOY_STAGE<br/>(uploaded PAD zips)")]
+            Registry[("MENDIX_ACTIVITY /<br/>internal_config")]
+            MendixApp["Per-app Mendix service<br/>(mendix-base image,<br/>one per registered app)"]
+        end
+        PG[("Consumer's Snowflake-<br/>managed Postgres")]
+        Data[("Consumer's Snowflake data<br/>(tables / views / warehouse)")]
+    end
+
+    Operator -->|Snowflake OAuth / caller token| AdminUI
+    AdminUI -->|internal SPCS DNS, HTTP +<br/>INTERNAL_AUTH_TOKEN| Controller
+    Operator -->|upload PAD| Stage
+    Controller -->|reads PAD at deploy| Stage
+    Controller -->|CREATE SERVICE, activity log| Registry
+    Controller -->|provisions, mounts pg_secret| MendixApp
+    MendixApp -->|PGSSLMODE=require, via pg_eai<br/>scoped to host:port| PG
+    EndUser -->|caller token, gated by<br/>per-app application role| MendixApp
+    MendixApp -->|restricted caller's rights:<br/>app role AND end-user grant| Data
+
+    classDef external fill:#eef,stroke:#557,color:#000
+    class PG,Data external
+```
+
+- **Admin UI and Controller** both run with `executeAsCaller` (restricted caller's rights) and are
+  gated by a Snowflake caller token; the Admin UI → Controller hop additionally requires a shared
+  `INTERNAL_AUTH_TOKEN` generated at install.
+- **Per-app Mendix services** (one per registered app) are the only components with external
+  egress — scoped to the consumer's own Postgres `host:port` via the bound `pg_eai` reference, no
+  broader network access.
+- **Consumer Snowflake data access** uses Snowflake's two-layer restricted caller's-rights model:
+  a query succeeds only when both the application object and the calling end user hold the grant.
+- See [native-app/HOW-TO-PUBLISH.md](native-app/HOW-TO-PUBLISH.md) for the release/install runbook
+  and [native-app/app/readme.md](native-app/app/readme.md) for the consumer-facing setup guide.
+
 ## Prerequisites
 
 - Mendix Studio Pro 10.24.19+ or 11.6.5+ (Portable App Distribution export)
