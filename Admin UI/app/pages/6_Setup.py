@@ -180,6 +180,10 @@ st.caption(
 )
 st.code(
     f"""-- Replace the data DB / schema / warehouse with the ones your Mendix app queries.
+-- Grant these BEFORE the app first connects. A grant added while the app is already
+-- running is not picked up until its Snowflake session refreshes with a newly minted
+-- caller token, which can take up to SERVICE_CALLER_TOKEN_VALIDITY_SECS (~30 min, set
+-- above) to rotate. Adding access to a live app is therefore not immediate.
 GRANT USAGE  ON DATABASE <data_db>                           TO APPLICATION {app_name};
 GRANT USAGE  ON SCHEMA   <data_db>.<data_schema>             TO APPLICATION {app_name};
 GRANT SELECT ON ALL TABLES IN SCHEMA <data_db>.<data_schema> TO APPLICATION {app_name};
@@ -192,9 +196,11 @@ st.warning(
     "one CALLER privilege granted on TABLE ...*. Snowflake does not allow FUTURE grants "
     "to an application (`Future grant on objects of type TABLE to APPLICATION is "
     "restricted`), so re-run the ALL TABLES / ALL VIEWS grants after you add new objects "
-    "the app must read. Run these grants before the app first connects - a privilege "
-    "added after the app has opened its Snowflake session may not be picked up until it "
-    "refreshes the connection."
+    "the app must read. Run these grants before the app first connects. A privilege "
+    "added after the app has opened its Snowflake session is not picked up live: the "
+    "app must reconnect with a freshly minted caller token, which can take up to "
+    "SERVICE_CALLER_TOKEN_VALIDITY_SECS (~30 minutes, set above) to rotate. Plan for "
+    "roughly a 30-minute lag when adding data access to an already-running app."
 )
 
 st.divider()
