@@ -19,6 +19,7 @@ from .models import (
     AppRecord,
     AppStatusResponse,
     CreateAppRequest,
+    HIDDEN_VALUE,
     RESOURCE_TIERS,
     ResourceTier,
     UpdateComputePoolRequest,
@@ -244,6 +245,10 @@ def _poll_status(service_name: str, target: str, timeout_secs: int = 300) -> boo
 def _sync_constant_secrets(app_name: str, constants: list[PadConstant], values: dict[str, str]) -> None:
     for c in constants:
         val = values.get(c.name, c.default)
+        if val == HIDDEN_VALUE:
+            # The registry stores only the masking sentinel, never real values;
+            # seeing it here means "keep the existing secret".
+            continue
         sf.create_or_replace_secret(_const_secret_fqn(app_name, c.secret_name), val)
 
 
@@ -342,6 +347,13 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
         )
     if registry.get_app(req.name):
         raise HTTPException(status_code=409, detail=f"App '{req.name}' already exists")
+    masked = [n for n, v in req.constants.items() if v == HIDDEN_VALUE]
+    if masked:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Constants {masked} have the reserved value '{HIDDEN_VALUE}'; "
+                   "a new app has no existing secrets to keep - provide real values",
+        )
 
     service_name = _service_name(req.name)
     filestorage_fqn = _filestorage_stage(req.name)
@@ -616,12 +628,29 @@ def _run_update_constants(name: str, service_name: str, merged: dict,
 def update_constants(name: str, req: UpdateConstantsRequest, background_tasks: BackgroundTasks,
                      roles: set[str] = Depends(caller_roles)):
     record = _record_for_mutation(name, roles)
+    stored = record.constants or {}
 
-    for const_name, value in req.constants.items():
+    # HIDDEN_VALUE means "keep the existing secret" - valid only for constants
+    # that already have one. For a new name it would leave the rebuilt spec
+    # mounting a secret that was never created.
+    unknown_masked = [n for n, v in req.constants.items()
+                      if v == HIDDEN_VALUE and n not in stored]
+    if unknown_masked:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Constants {unknown_masked} are new but have the reserved "
+                   f"value '{HIDDEN_VALUE}' - provide real values",
+        )
+
+    changed = {n: v for n, v in req.constants.items() if v != HIDDEN_VALUE}
+    if not changed:
+        return {"status": "UNCHANGED"}
+
+    for const_name, value in changed.items():
         secret_name = "MX_CONST_" + const_name.replace(".", "_").upper()
         sf.create_or_replace_secret(_const_secret_fqn(name, secret_name), value)
 
-    merged = {**(record.constants or {}), **req.constants}
+    merged = {**stored, **req.constants}
     registry.update_app(name, {"last_deploy_status": "DEPLOYING"})
     background_tasks.add_task(_run_update_constants, name, record.service_name, merged, record, _constants_from_dict(merged))
     return {"status": "DEPLOYING"}

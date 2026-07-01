@@ -206,6 +206,11 @@ def _detail_panel(selected_name: str) -> None:
                 "values). Set each value, click **Save constants**, then **Redeploy**:\n"
                 + "\n".join(f"- `{m}`" for m in missing_hint)
             )
+        st.caption(
+            "Values are stored as Snowflake secrets and load here masked as "
+            "`<HIDDEN>`. Leave a value as `<HIDDEN>` to keep it; overwrite it "
+            "to change it. (`<HIDDEN>` is reserved and cannot be a real value.)"
+        )
         current = record.get("constants") or {}
         constants_key = f"constants-{selected_name}"
         # Seed the editor from the stored constants exactly once, then let the widget

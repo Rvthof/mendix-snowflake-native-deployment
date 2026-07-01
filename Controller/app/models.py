@@ -10,6 +10,12 @@ from .pad_parser import CONSTANT_NAME_PATTERN
 
 _CONSTANT_NAME_RE = re.compile(CONSTANT_NAME_PATTERN)
 
+# Sentinel returned in place of constant values everywhere they leave the
+# controller (registry rows, API responses). Submitting it back means "keep the
+# existing secret"; the literal string is therefore reserved and can never be
+# stored as a real constant value.
+HIDDEN_VALUE = "<HIDDEN>"
+
 
 def _validate_constant_names(constants: dict[str, str]) -> dict[str, str]:
     # Constant names become Snowflake secret identifiers (MX_CONST_<name>), so a

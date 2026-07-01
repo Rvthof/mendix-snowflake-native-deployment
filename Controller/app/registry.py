@@ -5,9 +5,16 @@ import os
 from typing import Any, Optional
 
 from . import snowflake_client as sf
-from .models import AppRecord
+from .models import AppRecord, HIDDEN_VALUE
 
 _TABLE = f"{os.environ['DB_SCHEMA']}.MENDIX_APPS"
+
+
+def _mask_constants(constants: dict) -> dict:
+    """Keep the keys, drop the values. Constant values live only in the per-app
+    Snowflake secrets (MX_CONST_*); the registry row must never hold a plaintext
+    copy readable via SELECT on MENDIX_APPS."""
+    return {name: HIDDEN_VALUE for name in constants}
 
 
 def _row_to_record(row: dict) -> AppRecord:
@@ -31,7 +38,7 @@ def _row_to_record(row: dict) -> AppRecord:
 
 
 def create_app(record: AppRecord) -> None:
-    constants_json = json.dumps(record.constants)
+    constants_json = json.dumps(_mask_constants(record.constants))
     sf.execute_sql(
         f"""
         INSERT INTO {_TABLE}
@@ -84,7 +91,7 @@ def update_app(name: str, fields: dict[str, Any]) -> None:
     for key, val in fields.items():
         if key == "constants":
             set_clauses.append(f"{key} = PARSE_JSON(%s)")
-            values.append(json.dumps(val))
+            values.append(json.dumps(_mask_constants(val)))
         else:
             set_clauses.append(f"{key} = %s")
             values.append(val)
