@@ -74,6 +74,16 @@ with st.form("register"):
         help='e.g. { "Module.Setting": "value" }',
         height=150,
     )
+    license_id = st.text_input(
+        "Mendix license ID (optional)",
+        help="Leave both license fields blank to deploy trial-licensed (6 concurrent "
+             "users, restarts every 2-4 hours). Can also be set later on the Apps page.",
+    )
+    license_key = st.text_input(
+        "Mendix license key (optional)",
+        type="password",
+        help="Required if a license ID is given above.",
+    )
     submitted = st.form_submit_button("Register", type="primary")
 
 if submitted:
@@ -93,6 +103,8 @@ if submitted:
             constants = parsed
     except json.JSONDecodeError as e:
         errors.append(f"Constants JSON is invalid: {e}")
+    if bool(license_id) != bool(license_key):
+        errors.append("Provide both a license ID and a license key, or leave both blank.")
 
     if errors:
         for e in errors:
@@ -107,6 +119,9 @@ if submitted:
             "constants": constants,
             "owner_role": owner_role,
         }
+        if license_id and license_key:
+            payload["license_id"] = license_id
+            payload["license_key"] = license_key
         try:
             result = client().create_app(payload)
             st.cache_data.clear()

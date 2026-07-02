@@ -29,6 +29,7 @@ def _row_to_record(row: dict) -> AppRecord:
         resource_tier=row.get("RESOURCE_TIER") or "medium",
         use_caller_rights=bool(row.get("USE_CALLER_RIGHTS")),
         constants=constants,
+        license_id=row.get("LICENSE_ID"),
         pad_stage_path=row.get("PAD_STAGE_PATH"),
         endpoint_url=row.get("ENDPOINT_URL"),
         last_deploy_status=row.get("LAST_DEPLOY_STATUS"),
@@ -44,8 +45,8 @@ def create_app(record: AppRecord) -> None:
         f"""
         INSERT INTO {_TABLE}
             (name, service_name, app_schema, pg_database, resource_tier, use_caller_rights,
-             constants, pad_stage_path, endpoint_url, last_deploy_status, owner_role)
-        SELECT %s, %s, %s, %s, %s, %s, PARSE_JSON(%s), %s, %s, %s, %s
+             constants, pad_stage_path, endpoint_url, last_deploy_status, owner_role, license_id)
+        SELECT %s, %s, %s, %s, %s, %s, PARSE_JSON(%s), %s, %s, %s, %s, %s
         """,
         (
             record.name,
@@ -59,6 +60,7 @@ def create_app(record: AppRecord) -> None:
             record.endpoint_url,
             record.last_deploy_status,
             record.owner_role,
+            record.license_id,
         ),
     )
 
@@ -81,7 +83,7 @@ def list_apps() -> list[AppRecord]:
 _ALLOWED_UPDATE_COLUMNS = frozenset({
     "constants", "pad_stage_path", "endpoint_url",
     "last_deploy_status", "last_deployed_at",
-    "resource_tier", "use_caller_rights", "owner_role",
+    "resource_tier", "use_caller_rights", "owner_role", "license_id",
 })
 
 

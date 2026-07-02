@@ -4,7 +4,7 @@ import re
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from .pad_parser import CONSTANT_NAME_PATTERN
 
@@ -60,8 +60,20 @@ class CreateAppRequest(BaseModel):
     # Interpolated into GRANT … TO ROLE; constrain to an identifier so a privileged
     # caller can't inject SQL via this field (the UI restricts it, the API didn't).
     owner_role: str = Field(default="MENDIX_ADMIN_OPERATOR_ROLE", pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    # Optional: born-licensed app. license_id is an identifier (plain env var later);
+    # license_key is a credential and is never persisted - it only ever reaches
+    # sf.create_or_replace_secret. Both or neither: a key with no id, or an id with
+    # no key, is a half-configured license.
+    license_id: Optional[str] = None
+    license_key: Optional[str] = None
 
     _check_constants = field_validator("constants")(_validate_constant_names)
+
+    @model_validator(mode="after")
+    def _check_license_pair(self) -> "CreateAppRequest":
+        if bool(self.license_id) != bool(self.license_key):
+            raise ValueError("license_id and license_key must be provided together")
+        return self
 
 
 class UpdateConstantsRequest(BaseModel):
@@ -73,6 +85,13 @@ class UpdateConstantsRequest(BaseModel):
 class UpdateSpecRequest(BaseModel):
     resource_tier: Optional[ResourceTier] = None
     use_caller_rights: Optional[bool] = None
+
+
+class UpdateLicenseRequest(BaseModel):
+    # Write-only: unlike constants there is no HIDDEN_VALUE sentinel here, so every
+    # PUT must carry a real key - there is nothing stored to "keep unchanged".
+    license_id: str = Field(..., min_length=1)
+    license_key: str = Field(..., min_length=1)
 
 
 class AppRecord(BaseModel):
@@ -87,11 +106,20 @@ class AppRecord(BaseModel):
     use_caller_rights: bool
     constants: dict[str, str]
     owner_role: str = "MENDIX_ADMIN_OPERATOR_ROLE"
+    # Identifier, not a credential: safe to store and return as-is. The license key
+    # never appears on this model or anywhere else that leaves the controller; it
+    # lives only in the per-app MX_LICENSE_KEY secret.
+    license_id: Optional[str] = None
     pad_stage_path: Optional[str]
     endpoint_url: Optional[str]
     last_deploy_status: Optional[str]
     created_at: Optional[str]
     last_deployed_at: Optional[str]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def licensed(self) -> bool:
+        return bool(self.license_id)
 
 
 class AppStatusResponse(BaseModel):

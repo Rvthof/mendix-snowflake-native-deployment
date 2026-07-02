@@ -24,6 +24,7 @@ from .models import (
     ResourceTier,
     UpdateComputePoolRequest,
     UpdateConstantsRequest,
+    UpdateLicenseRequest,
     UpdateSpecRequest,
 )
 from .pad_parser import PadConstant, parse_from_zip
@@ -173,6 +174,7 @@ def _build_spec(
     resource_tier: ResourceTier,
     constants: list[PadConstant],
     use_caller_rights: bool,
+    license_id: str | None = None,
 ) -> str:
     res = RESOURCE_TIERS[resource_tier]
     pg_host_port = _pg_host()
@@ -195,21 +197,32 @@ def _build_spec(
             "directoryPath": f"/secrets/{c.secret_name.lower()}",
         })
 
+    env = {
+        "PAD_STAGE_PATH": pad_path,
+        "RUNTIME_PARAMS_DATABASETYPE": "POSTGRESQL",
+        "RUNTIME_PARAMS_DATABASEHOST": pg_host_port,
+        "RUNTIME_PARAMS_DATABASENAME": pg_database,
+        "RUNTIME_PARAMS_DATABASEUSERNAME": "application",
+        "RUNTIME_PARAMS_DATABASEUSESSL": "true",
+        "RUNTIME_PARAMS_COM_MENDIX_CORE_STORAGESERVICE": "com.mendix.storage.localfilesystem",
+        "RUNTIME_PARAMS_UPLOADEDFILESPATH": "/mnt/filestorage",
+    }
+    if license_id:
+        # The License ID is an identifier, not a credential - it goes in as a plain,
+        # operator-visible env var. The License Key is a credential and never appears
+        # here; it reaches the container only via the MX_LICENSE_KEY secret mount below.
+        env["RUNTIME_LICENSE_ID"] = license_id
+        secret_entries.append({
+            "snowflakeSecret": _secret_fqn(app_schema, "MX_LICENSE_KEY"),
+            "directoryPath": "/secrets/mx_license_key",
+        })
+
     spec: dict = {
         "spec": {
             "containers": [{
                 "name": "mendix-app",
                 "image": image_path,
-                "env": {
-                    "PAD_STAGE_PATH": pad_path,
-                    "RUNTIME_PARAMS_DATABASETYPE": "POSTGRESQL",
-                    "RUNTIME_PARAMS_DATABASEHOST": pg_host_port,
-                    "RUNTIME_PARAMS_DATABASENAME": pg_database,
-                    "RUNTIME_PARAMS_DATABASEUSERNAME": "application",
-                    "RUNTIME_PARAMS_DATABASEUSESSL": "true",
-                    "RUNTIME_PARAMS_COM_MENDIX_CORE_STORAGESERVICE": "com.mendix.storage.localfilesystem",
-                    "RUNTIME_PARAMS_UPLOADEDFILESPATH": "/mnt/filestorage",
-                },
+                "env": env,
                 "secrets": secret_entries,
                 "readinessProbe": {"port": 8080, "path": "/"},
                 "resources": {
@@ -388,6 +401,12 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
     sf.create_or_replace_secret(_secret_fqn(app_schema, "PG_PASS"), pg_password)
     sf.create_or_replace_secret(_secret_fqn(app_schema, "ADMIN_PASS"), req.admin_password)
 
+    # Born-licensed app: the key is a credential (write straight to its secret,
+    # never held in a local variable beyond this call); the id is stored on the
+    # record below like any other plain field. CreateAppRequest validates both-or-neither.
+    if req.license_id and req.license_key:
+        sf.create_or_replace_secret(_secret_fqn(app_schema, "MX_LICENSE_KEY"), req.license_key)
+
     # Create constant secrets from provided values (using defaults for any not supplied)
     constants: list[PadConstant] = []  # no PAD yet at create time
     for const_name, value in req.constants.items():
@@ -395,7 +414,8 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
         sf.create_or_replace_secret(_secret_fqn(app_schema, secret_name), value)
         constants.append(PadConstant(name=const_name, env_var="", default=value, secret_name=secret_name))
 
-    spec = _build_spec(req.name, app_schema, req.pg_database, req.resource_tier, constants, req.use_caller_rights)
+    spec = _build_spec(req.name, app_schema, req.pg_database, req.resource_tier, constants, req.use_caller_rights,
+                       req.license_id)
 
     sf.create_service(service_name, spec, COMPUTE_POOL, PG_EAI, QUERY_WAREHOUSE)
 
@@ -421,6 +441,7 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
         resource_tier=req.resource_tier,
         use_caller_rights=req.use_caller_rights,
         constants=req.constants,
+        license_id=req.license_id,
         pad_stage_path=None,
         endpoint_url=None,
         # Non-transient: the app has no PAD yet. A transient status here would
@@ -555,7 +576,7 @@ def _run_deploy(name: str, pad_path: str, record: AppRecord,
             # fix in _run_update_constants).
             registry.update_app(name, {"constants": new_constants})
             spec = _build_spec(name, record.app_schema, record.pg_database, ResourceTier(record.resource_tier),
-                               _constants_from_dict(new_constants), record.use_caller_rights)
+                               _constants_from_dict(new_constants), record.use_caller_rights, record.license_id)
             sf.alter_service_spec(record.service_name, spec)
         else:
             sf.suspend_service(record.service_name)
@@ -628,7 +649,7 @@ def _run_update_constants(name: str, service_name: str, merged: dict,
     registry.update_app(name, {"constants": merged})
     try:
         spec = _build_spec(name, record.app_schema, record.pg_database, ResourceTier(record.resource_tier),
-                           constants, record.use_caller_rights)
+                           constants, record.use_caller_rights, record.license_id)
         sf.alter_service_spec(service_name, spec)
         if not _poll_status(service_name, "RUNNING", timeout_secs=300):
             registry.update_app(name, {"last_deploy_status": "FAILED"})
@@ -677,7 +698,8 @@ def _run_update_spec(name: str, record: AppRecord, new_tier: ResourceTier,
                      new_caller: bool, caller_flipping_on: bool) -> None:
     try:
         constants_list = _constants_from_dict(record.constants or {})
-        spec = _build_spec(name, record.app_schema, record.pg_database, new_tier, constants_list, new_caller)
+        spec = _build_spec(name, record.app_schema, record.pg_database, new_tier, constants_list, new_caller,
+                           record.license_id)
         sf.alter_service_spec(record.service_name, spec)
         if caller_flipping_on:
             sf.set_caller_token_validity(record.service_name, 1800)
@@ -713,6 +735,71 @@ def update_spec(name: str, req: UpdateSpecRequest, background_tasks: BackgroundT
 
     registry.update_app(name, {"last_deploy_status": "DEPLOYING"})
     background_tasks.add_task(_run_update_spec, name, record, new_tier, new_caller, caller_flipping_on)
+    return {"status": "DEPLOYING"}
+
+
+def _run_update_license(name: str, service_name: str, record: AppRecord, license_id: str) -> None:
+    """Background task for a license set/replace. The secret is already written by
+    the endpoint handler; this restarts the service so the runtime picks it up (it
+    only checks the license at startup) and persists the id."""
+    registry.update_app(name, {"license_id": license_id})
+    try:
+        constants_list = _constants_from_dict(record.constants or {})
+        spec = _build_spec(name, record.app_schema, record.pg_database, ResourceTier(record.resource_tier),
+                           constants_list, record.use_caller_rights, license_id)
+        sf.alter_service_spec(service_name, spec)
+        if not _poll_status(service_name, "RUNNING", timeout_secs=300):
+            registry.update_app(name, {"last_deploy_status": "FAILED"})
+            return
+        _stamp_deploy_success(name, service_name)
+    except Exception:
+        try:
+            registry.update_app(name, {"last_deploy_status": "FAILED"})
+        except Exception:
+            pass
+        logger.exception("License update failed for %s", name)
+
+
+@app.put("/apps/{name}/license", status_code=202)
+def update_license(name: str, req: UpdateLicenseRequest, background_tasks: BackgroundTasks,
+                   roles: set[str] = Depends(caller_roles)):
+    record = _record_for_mutation(name, roles)
+    # No HIDDEN_VALUE semantics: the key is write-only, so every PUT carries a real
+    # key. Written before the registry/spec update, same ordering as constants.
+    sf.create_or_replace_secret(_secret_fqn(record.app_schema, "MX_LICENSE_KEY"), req.license_key)
+    registry.update_app(name, {"last_deploy_status": "DEPLOYING"})
+    background_tasks.add_task(_run_update_license, name, record.service_name, record, req.license_id)
+    return {"status": "DEPLOYING"}
+
+
+def _run_delete_license(name: str, service_name: str, record: AppRecord) -> None:
+    """Background task for license removal: revert to trial and restart, then drop
+    the now-unused secret once the restart has actually happened."""
+    registry.update_app(name, {"license_id": None})
+    try:
+        constants_list = _constants_from_dict(record.constants or {})
+        spec = _build_spec(name, record.app_schema, record.pg_database, ResourceTier(record.resource_tier),
+                           constants_list, record.use_caller_rights, None)
+        sf.alter_service_spec(service_name, spec)
+        if not _poll_status(service_name, "RUNNING", timeout_secs=300):
+            registry.update_app(name, {"last_deploy_status": "FAILED"})
+            return
+        _stamp_deploy_success(name, service_name)
+        sf.drop_secret(_secret_fqn(record.app_schema, "MX_LICENSE_KEY"))
+    except Exception:
+        try:
+            registry.update_app(name, {"last_deploy_status": "FAILED"})
+        except Exception:
+            pass
+        logger.exception("License removal failed for %s", name)
+
+
+@app.delete("/apps/{name}/license", status_code=202)
+def delete_license(name: str, background_tasks: BackgroundTasks,
+                   roles: set[str] = Depends(caller_roles)):
+    record = _record_for_mutation(name, roles)
+    registry.update_app(name, {"last_deploy_status": "DEPLOYING"})
+    background_tasks.add_task(_run_delete_license, name, record.service_name, record)
     return {"status": "DEPLOYING"}
 
 

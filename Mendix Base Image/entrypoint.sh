@@ -43,6 +43,13 @@ if [ -d "$SECRETS_DIR" ]; then
         RUNTIME_ADMINUSER_PASSWORD="$M2EE_ADMIN_PASS"
         export M2EE_ADMIN_PASS RUNTIME_ADMINUSER_PASSWORD
     fi
+    # Mendix license key (RUNTIME_LICENSE_ID arrives as a plain env var, no file needed).
+    # Absent entirely when the app runs trial-licensed - the runtime just falls back
+    # to trial behavior, no error.
+    if [ -f "$SECRETS_DIR/mx_license_key/secret_string" ]; then
+        RUNTIME_LICENSE_KEY="$(cat "$SECRETS_DIR/mx_license_key/secret_string")"
+        export RUNTIME_LICENSE_KEY
+    fi
 
     # Dynamic constant secrets: mx_const_<module>_<name> -> read variables.conf for env var mapping
     VARS_CONF="/mendix/pad/etc/constants/variables.conf"

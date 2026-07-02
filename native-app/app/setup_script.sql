@@ -42,12 +42,14 @@ CREATE TABLE IF NOT EXISTS app_public.MENDIX_APPS (
     last_deploy_status VARCHAR,                      -- DEPLOYING | READY | FAILED
     created_at         TIMESTAMP  DEFAULT CURRENT_TIMESTAMP,
     last_deployed_at   TIMESTAMP,
-    owner_role         VARCHAR    DEFAULT 'MENDIX_ADMIN_OPERATOR_ROLE'  -- management-plane owner
+    owner_role         VARCHAR    DEFAULT 'MENDIX_ADMIN_OPERATOR_ROLE',  -- management-plane owner
+    license_id         VARCHAR                       -- Mendix License ID (identifier, not a credential; the key lives only in the MX_LICENSE_KEY secret)
 );
 -- CREATE IF NOT EXISTS never adds columns to an existing table; upgrades from
 -- versions without app_schema need the explicit ALTER. Rows written before the
 -- column existed stay NULL and are invalid (clean break, no install base).
 ALTER TABLE app_public.MENDIX_APPS ADD COLUMN IF NOT EXISTS app_schema VARCHAR;
+ALTER TABLE app_public.MENDIX_APPS ADD COLUMN IF NOT EXISTS license_id VARCHAR;
 
 -- The controller used to create this at startup (activity.py::init_table); pre-create
 -- it here so the schema is complete on install.

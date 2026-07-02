@@ -268,6 +268,61 @@ def _detail_panel(selected_name: str) -> None:
             except ControllerError as e:
                 st.error(str(e))
 
+    with st.expander("License"):
+        if record.get("licensed"):
+            st.caption(f"Licensed — ID `{record.get('license_id')}`.")
+        else:
+            st.caption(
+                "Trial: max 6 concurrent users, unlimited named users; the runtime "
+                "restarts every 2-4 hours."
+            )
+        st.warning(
+            "Saving or removing a license restarts the service — the runtime only "
+            "checks the license at startup."
+        )
+        new_license_id = st.text_input(
+            "License ID",
+            value=record.get("license_id") or "",
+            key=f"license-id-{selected_name}",
+        )
+        new_license_key = st.text_input(
+            "License key",
+            type="password",
+            value="",
+            key=f"license-key-{selected_name}",
+            help="Write-only: never prefilled or read back, even after saving.",
+        )
+        if st.button(
+            "Save license",
+            key=f"license-save-{selected_name}",
+            disabled=(deploy_status in _TRANSIENT or not new_license_id or not new_license_key),
+        ):
+            try:
+                client().update_license(selected_name, new_license_id, new_license_key)
+                _refresh_now()
+                st.success("License saved. Service is restarting.")
+                st.rerun()
+            except ControllerError as e:
+                st.error(str(e))
+
+        if record.get("license_id"):
+            remove_confirm = st.checkbox(
+                "Confirm removal (app reverts to trial after restart)",
+                key=f"license-remove-confirm-{selected_name}",
+            )
+            if st.button(
+                "Remove license",
+                key=f"license-remove-{selected_name}",
+                disabled=(deploy_status in _TRANSIENT or not remove_confirm),
+            ):
+                try:
+                    client().delete_license(selected_name)
+                    _refresh_now()
+                    st.success("License removed. Service is restarting.")
+                    st.rerun()
+                except ControllerError as e:
+                    st.error(str(e))
+
     with st.expander("Service spec"):
         st.warning(
             "Editing the spec restarts the service. Active end-user sessions on "

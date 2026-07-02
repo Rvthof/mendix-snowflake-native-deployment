@@ -84,6 +84,35 @@ Constants editor.
 
 ---
 
+## Licensing an app
+
+Every app deploys trial-licensed: 6 concurrent users, unlimited named users, and the runtime
+stops after a randomly chosen 2-4 hours (SPCS restarts it, losing sessions and in-memory
+state). To run production-licensed, request a License ID + License Key from Mendix Support
+(Developer Portal → app → "Request New App Node", hosting type Docker/other - no server ID
+needed) and set them on the app.
+
+**Where to set it:** the **License** section on the Apps page detail panel, the two optional
+fields on the Register page, or `PUT`/`DELETE /apps/{name}/license` directly (below).
+
+**What happens:** the License ID is not a credential - it is stored on the registry row and
+passed to the container as a plain `RUNTIME_LICENSE_ID` env var, visible in the Service spec
+expander like any other setting. The License Key *is* a credential and follows the constants
+pattern: it is written straight to a per-app Snowflake secret
+(`MXAPP_<APPNAME>.MX_LICENSE_KEY`) and mounted at `/secrets/mx_license_key`; it is write-only
+from the UI/API side and never appears in a response, the registry row, or the activity log.
+Saving or removing a license restarts the service, since the runtime only checks the license
+once at startup.
+
+**Validation is local and offline.** No egress is added or required - this is the documented
+model for Docker, Kubernetes DIY, Cloud Foundry, and VM deployments, and container licenses
+are not bound to a server ID, so restarts and redeploys are unproblematic.
+
+**Removing a license** (`DELETE /apps/{name}/license`) reverts the app to trial after the next
+restart.
+
+---
+
 ## Access Model
 
 **Management plane** (who may deploy and manage an app): each app row has an `owner_role`. An
@@ -135,11 +164,13 @@ for `PRIVILEGED_ROLES` members.
 | Method + path | Purpose |
 |---|---|
 | `GET /apps` | List apps visible to the caller (with service status) |
-| `POST /apps` | Register an app (name, pg_database, admin_password, resource_tier, use_caller_rights, constants, owner_role) |
+| `POST /apps` | Register an app (name, pg_database, admin_password, resource_tier, use_caller_rights, constants, owner_role, optional license_id + license_key) |
 | `GET /apps/{name}` | App record + live service status; poll this after a deploy |
 | `POST /apps/{name}/trigger-deploy` | Deploy the PAD staged under `apps/{name}/` (202, async) |
 | `PUT /apps/{name}/constants` | Update constants (`<HIDDEN>` = keep existing; 202, restarts) |
 | `PUT /apps/{name}/spec` | Change resource tier / caller's rights (202, restarts) |
+| `PUT /apps/{name}/license` | Set the Mendix license (license_id + license_key; 202, restarts) |
+| `DELETE /apps/{name}/license` | Remove the license, revert to trial (202, restarts) |
 | `POST /apps/{name}/suspend` / `resume` | Suspend or resume the service (202) |
 | `DELETE /apps/{name}` | Drop the service, access role, per-app secrets, and registry row |
 | `GET /apps/{name}/logs` | App container logs |

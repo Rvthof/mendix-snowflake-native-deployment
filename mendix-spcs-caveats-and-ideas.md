@@ -26,17 +26,23 @@ The Mendix file storage is backed by a Snowflake stage volume. Stage volumes are
 
 ### Trial license time limit
 
-Without a production license, the Mendix runtime terminates after ~2 hours. SPCS auto-restarts it, but sessions and in-memory state are lost.
+Without a Mendix license set, the runtime runs trial-licensed: 6 concurrent users, unlimited
+named users, and it stops after a randomly chosen 2-4 hours (SPCS restarts it, losing sessions
+and in-memory state).
 
-**Mitigation:** Add license env vars (`RUNTIME_LICENSE_ID`, `RUNTIME_LICENSE_KEY`). License validation may require egress to `licensing.mendix.com:443` via an EAI.
+**Mitigation:** set a license (License ID + License Key, requested from Mendix Support per app
+node) via the Admin UI's License section on the Apps page, or at registration. Validation is
+local and offline - the key is a signed blob the runtime checks once at startup. No egress is
+required or added for this; the security-questionnaire answer stays "Postgres only".
 
-**Native App implication (flagged 2026-07-01):** the packaged Native App (`native-app/`) does
-not implement this today - `manifest.yml` only declares the `pg_eai` reference, no egress path to
-`licensing.mendix.com` exists, so apps deployed through the Native App currently run
-trial-licensed only (the ~2h restart cycle above). Adding production licensing would need a new
-declared reference + consumer-bound EAI (same pattern as `pg_eai`), which would also add a second
-egress destination to the answers given in Snowflake's security questionnaire (currently answered
-as "Postgres only"). Revisit before promising production licenses on the Native App path.
+**Native App status (updated 2026-07-02):** implemented. `PUT`/`DELETE /apps/{name}/license`
+write the key to a per-app secret (`MXAPP_<NAME>.MX_LICENSE_KEY`) and the id as a plain
+`RUNTIME_LICENSE_ID` env var in the service spec, the same pattern already used for constants.
+Only the static License ID + License Key model is supported - the documented model for Docker,
+Kubernetes DIY, Cloud Foundry, and VM deployments. The "Subscription Secret" model (SAP BTP,
+Mendix on Kubernetes in Connected mode) is coupled to the Mendix Operator with no documented
+runtime-level setting for a standalone Portable Runtime container, and remains unsupported. See
+`PLAN-mendix-licensing.md` section 6 for the upgrade path if Mendix ever exposes one.
 
 ---
 
