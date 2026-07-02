@@ -75,6 +75,9 @@ async def log_operator(request: Request, call_next):
     return response
 
 DB_SCHEMA = os.environ["DB_SCHEMA"]
+# DB_SCHEMA is "<db>.APP_PUBLIC"; per-app schemas live next to it in the same
+# database. Empty prefix when unqualified (local dev outside SPCS).
+_DB_PREFIX = DB_SCHEMA.rsplit(".", 1)[0] + "." if "." in DB_SCHEMA else ""
 COMPUTE_POOL = os.environ["COMPUTE_POOL"]
 IMAGE_REPO = os.environ["IMAGE_REPO"]
 # Full image reference for per-app Mendix base services. Dev default is the repo
@@ -139,20 +142,33 @@ def _service_name(app_name: str) -> str:
     return f"{app_name.upper()}_SERVICE"
 
 
-def _filestorage_stage(app_name: str) -> str:
-    return f"{DB_SCHEMA}.{app_name.upper()}_FILESTORAGE_STAGE"
+def _app_schema_name(app_name: str) -> str:
+    # Everything an app owns (secrets, filestorage stage) lives in its own
+    # schema, so ownership is containment rather than a naming convention and
+    # delete is a single DROP SCHEMA ... CASCADE. Prefix MXAPP_, not APP_: an
+    # app named "public" must not resolve to the shared APP_PUBLIC schema.
+    return f"MXAPP_{app_name.upper()}"
 
 
-def _secret_fqn(app_name: str, suffix: str) -> str:
-    return f"{DB_SCHEMA}.{app_name.upper()}_{suffix.upper()}"
+def _schema_fqn(schema: str) -> str:
+    return f"{_DB_PREFIX}{schema}"
 
 
-def _const_secret_fqn(app_name: str, secret_name: str) -> str:
-    return f"{DB_SCHEMA}.{app_name.upper()}_{secret_name}"
+def _filestorage_stage(app_schema: str) -> str:
+    return f"{_schema_fqn(app_schema)}.FILESTORAGE_STAGE"
+
+
+def _secret_fqn(app_schema: str, name: str) -> str:
+    return f"{_schema_fqn(app_schema)}.{name.upper()}"
+
+
+def _const_secret_name(const_name: str) -> str:
+    return "MX_CONST_" + const_name.replace(".", "_").upper()
 
 
 def _build_spec(
     app_name: str,
+    app_schema: str,
     pg_database: str,
     resource_tier: ResourceTier,
     constants: list[PadConstant],
@@ -165,17 +181,17 @@ def _build_spec(
 
     secret_entries = [
         {
-            "snowflakeSecret": _secret_fqn(app_name, "PG_PASS"),
+            "snowflakeSecret": _secret_fqn(app_schema, "PG_PASS"),
             "directoryPath": "/secrets/pg_pass",
         },
         {
-            "snowflakeSecret": _secret_fqn(app_name, "ADMIN_PASS"),
+            "snowflakeSecret": _secret_fqn(app_schema, "ADMIN_PASS"),
             "directoryPath": "/secrets/admin_pass",
         },
     ]
     for c in constants:
         secret_entries.append({
-            "snowflakeSecret": _const_secret_fqn(app_name, c.secret_name),
+            "snowflakeSecret": _secret_fqn(app_schema, c.secret_name),
             "directoryPath": f"/secrets/{c.secret_name.lower()}",
         })
 
@@ -209,7 +225,7 @@ def _build_spec(
                 {
                     "name": "filestorage",
                     "source": "stage",
-                    "stageConfig": {"name": f"@{_filestorage_stage(app_name)}"},
+                    "stageConfig": {"name": f"@{_filestorage_stage(app_schema)}"},
                     # mendix-base runs as the non-root mendixuser (uid/gid 999, set in its
                     # Dockerfile); without this the stage mount is root-owned and
                     # RUNTIME_PARAMS_UPLOADEDFILESPATH is not writable by the container.
@@ -242,20 +258,20 @@ def _poll_status(service_name: str, target: str, timeout_secs: int = 300) -> boo
     return False
 
 
-def _sync_constant_secrets(app_name: str, constants: list[PadConstant], values: dict[str, str]) -> None:
+def _sync_constant_secrets(app_schema: str, constants: list[PadConstant], values: dict[str, str]) -> None:
     for c in constants:
         val = values.get(c.name, c.default)
         if val == HIDDEN_VALUE:
             # The registry stores only the masking sentinel, never real values;
             # seeing it here means "keep the existing secret".
             continue
-        sf.create_or_replace_secret(_const_secret_fqn(app_name, c.secret_name), val)
+        sf.create_or_replace_secret(_secret_fqn(app_schema, c.secret_name), val)
 
 
 def _constants_from_dict(d: dict[str, str]) -> list[PadConstant]:
     return [
         PadConstant(name=k, env_var="", default=v,
-                    secret_name="MX_CONST_" + k.replace(".", "_").upper())
+                    secret_name=_const_secret_name(k))
         for k, v in d.items()
     ]
 
@@ -356,10 +372,12 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
         )
 
     service_name = _service_name(req.name)
-    filestorage_fqn = _filestorage_stage(req.name)
+    app_schema = _app_schema_name(req.name)
 
-    # Create filestorage stage
-    sf.create_stage(filestorage_fqn)
+    # The app's own schema holds everything it owns (secrets, filestorage
+    # stage); delete_app removes it with one DROP SCHEMA ... CASCADE.
+    sf.create_schema(_schema_fqn(app_schema))
+    sf.create_stage(_filestorage_stage(app_schema))
 
     # Create PG password and admin password secrets.
     # Read the bootstrap PG password from the controller's bound pg_secret (/secrets/pg).
@@ -367,17 +385,17 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
     _, pg_password = _load_pg_credentials()
     if not pg_password:
         raise HTTPException(status_code=500, detail="Controller PG credentials not mounted at /secrets/pg")
-    sf.create_or_replace_secret(_secret_fqn(req.name, "PG_PASS"), pg_password)
-    sf.create_or_replace_secret(_secret_fqn(req.name, "ADMIN_PASS"), req.admin_password)
+    sf.create_or_replace_secret(_secret_fqn(app_schema, "PG_PASS"), pg_password)
+    sf.create_or_replace_secret(_secret_fqn(app_schema, "ADMIN_PASS"), req.admin_password)
 
     # Create constant secrets from provided values (using defaults for any not supplied)
     constants: list[PadConstant] = []  # no PAD yet at create time
     for const_name, value in req.constants.items():
-        secret_name = "MX_CONST_" + const_name.replace(".", "_").upper()
-        sf.create_or_replace_secret(_const_secret_fqn(req.name, secret_name), value)
+        secret_name = _const_secret_name(const_name)
+        sf.create_or_replace_secret(_secret_fqn(app_schema, secret_name), value)
         constants.append(PadConstant(name=const_name, env_var="", default=value, secret_name=secret_name))
 
-    spec = _build_spec(req.name, req.pg_database, req.resource_tier, constants, req.use_caller_rights)
+    spec = _build_spec(req.name, app_schema, req.pg_database, req.resource_tier, constants, req.use_caller_rights)
 
     sf.create_service(service_name, spec, COMPUTE_POOL, PG_EAI, QUERY_WAREHOUSE)
 
@@ -398,6 +416,7 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
     record = AppRecord(
         name=req.name,
         service_name=service_name,
+        app_schema=app_schema,
         pg_database=req.pg_database,
         resource_tier=req.resource_tier,
         use_caller_rights=req.use_caller_rights,
@@ -530,12 +549,12 @@ def _run_deploy(name: str, pad_path: str, record: AppRecord,
         )
 
         if constants_changed:
-            _sync_constant_secrets(name, pad_constants, new_constants)
+            _sync_constant_secrets(record.app_schema, pad_constants, new_constants)
             # Persist constants alongside the secret sync so a failed restart cannot
             # leave the registry and the per-app secrets out of step (see the same
             # fix in _run_update_constants).
             registry.update_app(name, {"constants": new_constants})
-            spec = _build_spec(name, record.pg_database, ResourceTier(record.resource_tier),
+            spec = _build_spec(name, record.app_schema, record.pg_database, ResourceTier(record.resource_tier),
                                _constants_from_dict(new_constants), record.use_caller_rights)
             sf.alter_service_spec(record.service_name, spec)
         else:
@@ -608,7 +627,7 @@ def _run_update_constants(name: str, service_name: str, merged: dict,
     # not discard the registry copy (otherwise the UI shows constants as {}).
     registry.update_app(name, {"constants": merged})
     try:
-        spec = _build_spec(name, record.pg_database, ResourceTier(record.resource_tier),
+        spec = _build_spec(name, record.app_schema, record.pg_database, ResourceTier(record.resource_tier),
                            constants, record.use_caller_rights)
         sf.alter_service_spec(service_name, spec)
         if not _poll_status(service_name, "RUNNING", timeout_secs=300):
@@ -646,8 +665,7 @@ def update_constants(name: str, req: UpdateConstantsRequest, background_tasks: B
         return {"status": "UNCHANGED"}
 
     for const_name, value in changed.items():
-        secret_name = "MX_CONST_" + const_name.replace(".", "_").upper()
-        sf.create_or_replace_secret(_const_secret_fqn(name, secret_name), value)
+        sf.create_or_replace_secret(_secret_fqn(record.app_schema, _const_secret_name(const_name)), value)
 
     merged = {**stored, **req.constants}
     registry.update_app(name, {"last_deploy_status": "DEPLOYING"})
@@ -659,7 +677,7 @@ def _run_update_spec(name: str, record: AppRecord, new_tier: ResourceTier,
                      new_caller: bool, caller_flipping_on: bool) -> None:
     try:
         constants_list = _constants_from_dict(record.constants or {})
-        spec = _build_spec(name, record.pg_database, new_tier, constants_list, new_caller)
+        spec = _build_spec(name, record.app_schema, record.pg_database, new_tier, constants_list, new_caller)
         sf.alter_service_spec(record.service_name, spec)
         if caller_flipping_on:
             sf.set_caller_token_validity(record.service_name, 1800)
@@ -772,4 +790,11 @@ def delete_app(name: str, roles: set[str] = Depends(caller_roles)):
     # Dropping the service auto-drops its service roles (revoking the endpoint
     # grant from app_admin); the per-app application role persists, so drop it.
     sf.drop_app_access_role(name)
+
+    # The app's schema contains everything it owns: credential secrets
+    # (PG password, admin password, constants) and the filestorage stage.
+    # CASCADE removes them all, including the user's uploaded files; the
+    # admin UI warns about this before the delete.
+    sf.drop_schema_cascade(_schema_fqn(record.app_schema))
+
     registry.delete_app(name)

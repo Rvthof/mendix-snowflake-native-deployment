@@ -55,12 +55,14 @@ the microflow with the compound token.
 
 ## App Constants
 
-Constants from Studio Pro are stored as Snowflake `GENERIC_STRING` secrets, one per constant.
-The controller manages them.
+Constants from Studio Pro are stored as Snowflake `GENERIC_STRING` secrets, one per constant,
+in the app's own schema (`MXAPP_<APPNAME>`, which also holds the `PG_PASS`/`ADMIN_PASS`
+secrets and the filestorage stage). The controller manages them; deleting the app drops the
+schema and everything in it.
 
 **Naming convention:** secret name = `MX_CONST_<MODULE>_<CONSTANTNAME>` (uppercase, dots
 replaced by underscores). Example: `ExternalDatabaseConnector.LogNode` →
-`MX_CONST_EXTERNALDATABASECONNECTOR_LOGNODE`.
+`MXAPP_MYAPP.MX_CONST_EXTERNALDATABASECONNECTOR_LOGNODE`.
 
 **How they reach the container:** the base image `entrypoint.sh` reads
 `etc/constants/variables.conf` from the extracted PAD to find the env var name for each
@@ -139,7 +141,7 @@ for `PRIVILEGED_ROLES` members.
 | `PUT /apps/{name}/constants` | Update constants (`<HIDDEN>` = keep existing; 202, restarts) |
 | `PUT /apps/{name}/spec` | Change resource tier / caller's rights (202, restarts) |
 | `POST /apps/{name}/suspend` / `resume` | Suspend or resume the service (202) |
-| `DELETE /apps/{name}` | Drop the service, access role, and registry row |
+| `DELETE /apps/{name}` | Drop the service, access role, per-app secrets, and registry row |
 | `GET /apps/{name}/logs` | App container logs |
 | `GET /activity` | Audit log (scoped to the caller's apps) |
 | `GET /system/logs/{target}`, `GET`/`PATCH /system/compute-pool` | Infrastructure (privileged roles only) |

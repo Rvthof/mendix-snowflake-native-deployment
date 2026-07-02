@@ -139,8 +139,9 @@ See [mendix-spcs-howto.md](mendix-spcs-howto.md) for setup details.
 ## File Storage
 
 Files uploaded through Mendix land on a per-app Snowflake stage
-(`app_public.<APPNAME>_FILESTORAGE_STAGE`) created and owned by the application, so the data
-stays inside the app boundary in the consumer's account.
+(`MXAPP_<APPNAME>.FILESTORAGE_STAGE`, in the app's own schema) created and owned by the
+application, so the data stays inside the app boundary in the consumer's account. Deleting
+an app drops its schema, including these files.
 
 ## Cost
 

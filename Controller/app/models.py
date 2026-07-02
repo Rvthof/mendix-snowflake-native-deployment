@@ -43,7 +43,13 @@ RESOURCE_TIERS = {
 
 
 class CreateAppRequest(BaseModel):
-    name: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9_]*$", description="App identifier (letters, digits, underscores)")
+    # The name is embedded (uppercased) in derived Snowflake identifiers
+    # (MXAPP_<NAME> schema, <NAME>_SERVICE, app_<name>_user role), so it is
+    # restricted to identifier characters and capped well under Snowflake's
+    # 255-char identifier limit. Uniqueness is checked case-insensitively at
+    # registration because the derived identifiers are case-insensitive.
+    name: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9_]*$", max_length=50,
+                      description="App identifier (letters, digits, underscores; max 50)")
     # Flows into the runtime's CREATE DATABASE (shell psql) and the service spec;
     # constrain to an identifier so it cannot inject SQL/shell metacharacters.
     pg_database: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -72,6 +78,10 @@ class UpdateSpecRequest(BaseModel):
 class AppRecord(BaseModel):
     name: str
     service_name: str
+    # Per-app schema (MXAPP_<NAME>, unqualified) holding the app's secrets and
+    # filestorage stage. Stored rather than derived so ownership never depends
+    # on reconstructing a naming convention.
+    app_schema: str
     pg_database: str
     resource_tier: str
     use_caller_rights: bool

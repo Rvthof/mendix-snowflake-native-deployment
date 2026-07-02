@@ -182,8 +182,10 @@ def _detail_panel(selected_name: str) -> None:
                 st.error(str(e))
     with action_cols[3]:
         with st.popover("Delete", use_container_width=True):
-            st.warning(f"This will DROP service `{record.get('service_name')}` "
-                       "and remove the registry entry. The PG database and stage are NOT deleted.")
+            st.warning(f"This will DROP service `{record.get('service_name')}`, "
+                       "remove the registry entry, and delete the app's schema with its "
+                       "secrets and **uploaded files** (filestorage stage). "
+                       "The PG database is NOT deleted.")
             typed = st.text_input(
                 f"Type `{selected_name}` to confirm:",
                 key=f"delete-confirm-{selected_name}",
@@ -369,8 +371,9 @@ def _bulk_panel(names: list[str]) -> None:
     with action_cols[2]:
         with st.popover(f"Delete ({len(names)})", use_container_width=True):
             st.warning(
-                f"These {len(names)} services will be DROPPED and removed "
-                "from the registry. PG databases and stages are NOT deleted."
+                f"These {len(names)} services will be DROPPED and removed from the "
+                "registry, and each app's schema is deleted with its secrets and "
+                "**uploaded files** (filestorage stage). PG databases are NOT deleted."
             )
             for a in selected_apps:
                 st.write(f"- `{a['name']}` (service: `{a['service_name']}`)")

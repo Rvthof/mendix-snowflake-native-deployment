@@ -32,6 +32,7 @@ GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin;
 CREATE TABLE IF NOT EXISTS app_public.MENDIX_APPS (
     name               VARCHAR    NOT NULL PRIMARY KEY,
     service_name       VARCHAR    NOT NULL,
+    app_schema         VARCHAR,                      -- per-app schema (MXAPP_<NAME>) holding secrets + filestorage stage
     pg_database        VARCHAR    NOT NULL,
     resource_tier      VARCHAR    DEFAULT 'medium',
     use_caller_rights  BOOLEAN    DEFAULT FALSE,
@@ -43,6 +44,10 @@ CREATE TABLE IF NOT EXISTS app_public.MENDIX_APPS (
     last_deployed_at   TIMESTAMP,
     owner_role         VARCHAR    DEFAULT 'MENDIX_ADMIN_OPERATOR_ROLE'  -- management-plane owner
 );
+-- CREATE IF NOT EXISTS never adds columns to an existing table; upgrades from
+-- versions without app_schema need the explicit ALTER. Rows written before the
+-- column existed stay NULL and are invalid (clean break, no install base).
+ALTER TABLE app_public.MENDIX_APPS ADD COLUMN IF NOT EXISTS app_schema VARCHAR;
 
 -- The controller used to create this at startup (activity.py::init_table); pre-create
 -- it here so the schema is complete on install.

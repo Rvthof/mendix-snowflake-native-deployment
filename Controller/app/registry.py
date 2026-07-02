@@ -24,6 +24,7 @@ def _row_to_record(row: dict) -> AppRecord:
     return AppRecord(
         name=row["NAME"],
         service_name=row["SERVICE_NAME"],
+        app_schema=row["APP_SCHEMA"],
         pg_database=row["PG_DATABASE"],
         resource_tier=row.get("RESOURCE_TIER") or "medium",
         use_caller_rights=bool(row.get("USE_CALLER_RIGHTS")),
@@ -42,13 +43,14 @@ def create_app(record: AppRecord) -> None:
     sf.execute_sql(
         f"""
         INSERT INTO {_TABLE}
-            (name, service_name, pg_database, resource_tier, use_caller_rights,
+            (name, service_name, app_schema, pg_database, resource_tier, use_caller_rights,
              constants, pad_stage_path, endpoint_url, last_deploy_status, owner_role)
-        SELECT %s, %s, %s, %s, %s, PARSE_JSON(%s), %s, %s, %s, %s
+        SELECT %s, %s, %s, %s, %s, %s, PARSE_JSON(%s), %s, %s, %s, %s
         """,
         (
             record.name,
             record.service_name,
+            record.app_schema,
             record.pg_database,
             record.resource_tier,
             record.use_caller_rights,
@@ -62,7 +64,10 @@ def create_app(record: AppRecord) -> None:
 
 
 def get_app(name: str) -> Optional[AppRecord]:
-    rows = sf.execute_sql(f"SELECT * FROM {_TABLE} WHERE name = %s", (name,))
+    # Case-insensitive: the name feeds case-insensitive Snowflake identifiers
+    # (MXAPP_<NAME> schema, <NAME>_SERVICE), so "myapp" and "MyApp" are the
+    # same app. Registration relies on this for its duplicate check.
+    rows = sf.execute_sql(f"SELECT * FROM {_TABLE} WHERE UPPER(name) = UPPER(%s)", (name,))
     if not rows:
         return None
     return _row_to_record(rows[0])
@@ -97,10 +102,10 @@ def update_app(name: str, fields: dict[str, Any]) -> None:
             values.append(val)
     values.append(name)
     sf.execute_sql(
-        f"UPDATE {_TABLE} SET {', '.join(set_clauses)} WHERE name = %s",
+        f"UPDATE {_TABLE} SET {', '.join(set_clauses)} WHERE UPPER(name) = UPPER(%s)",
         tuple(values),
     )
 
 
 def delete_app(name: str) -> None:
-    sf.execute_sql(f"DELETE FROM {_TABLE} WHERE name = %s", (name,))
+    sf.execute_sql(f"DELETE FROM {_TABLE} WHERE UPPER(name) = UPPER(%s)", (name,))

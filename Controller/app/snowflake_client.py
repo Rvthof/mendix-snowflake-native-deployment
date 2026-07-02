@@ -106,6 +106,26 @@ def create_or_replace_secret(fqn: str, value: str) -> None:
     execute_sql(f"CREATE OR REPLACE SECRET {fqn} TYPE = GENERIC_STRING SECRET_STRING = '{escaped}'")
 
 
+def drop_secret(fqn: str) -> None:
+    _assert_identifier(fqn)
+    execute_sql(f"DROP SECRET IF EXISTS {fqn}")
+
+
+def create_schema(fqn: str) -> None:
+    _assert_identifier(fqn)
+    execute_sql(f"CREATE SCHEMA IF NOT EXISTS {fqn}")
+
+
+def drop_schema_cascade(fqn: str) -> None:
+    _assert_identifier(fqn)
+    # Safety interlock: the controller only ever drops per-app schemas. A bug
+    # that routed APP_PUBLIC (registry, deploy stage, services) here would
+    # destroy the installation, so refuse anything else outright.
+    if not fqn.split(".")[-1].upper().startswith("MXAPP_"):
+        raise ValueError(f"refusing to drop non-per-app schema: {fqn!r}")
+    execute_sql(f"DROP SCHEMA IF EXISTS {fqn} CASCADE")
+
+
 def create_stage(fqn: str) -> None:
     execute_sql(f"CREATE STAGE IF NOT EXISTS {fqn} ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')")
 
