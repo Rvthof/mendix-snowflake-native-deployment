@@ -26,7 +26,7 @@ _owner_candidates = [
 
 st.caption(
     "Creates the SPCS service, filestorage stage, and PG/admin secrets. "
-    "Upload the PAD afterward via `upload-pad.ps1` or the redeploy action on the Apps page."
+    "Upload the PAD afterward via the Upload page (`snow stage copy`), then Redeploy on the Apps page."
 )
 
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")

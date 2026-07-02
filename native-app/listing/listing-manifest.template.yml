@@ -15,9 +15,9 @@
 # The application package is attached by the SQL clause, NOT here. The *version*
 # served to consumers comes from the package's release directive, NOT this file.
 #
-# GATED: only used in Phase 5b, after DISTRIBUTION=EXTERNAL and NAAAPS review
-# reach APPROVED (plus the one-time container Product Security provider approval).
-# See PLAN-native-app-packaging.md section 9 (R1) and section 8.
+# GATED: only used once DISTRIBUTION=EXTERNAL and the NAAAPS review reach
+# APPROVED (plus the one-time container Product Security provider approval).
+# See HOW-TO-PUBLISH.md "Distribution Gate: External Listing".
 #
 # Marketing copy + structure mirror the live published sibling listing
 # "Mendix Data Loader" (global_name GZTDZHHIE0), read from this same provider

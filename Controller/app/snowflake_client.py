@@ -143,8 +143,7 @@ def drop_service(name: str) -> None:
 #
 # Gates which authenticated end-users may open an app's public endpoint, via the
 # service's auto-created ALL_ENDPOINTS_USAGE service role granted to a per-app
-# APPLICATION role. Distinct from owner_role (management plane); see
-# PLAN-app-access-control.md and PLAN-native-app-packaging.md section 6.
+# APPLICATION role. Distinct from owner_role (management plane).
 #
 # Inside the Native App the controller session is the app role, which owns the
 # services and every application role, so it can both create the per-app

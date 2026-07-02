@@ -1,9 +1,7 @@
 # =============================================================================
 # Mendix-on-SPCS Native App - manifest
 #
-# Replaces the three setup.ps1 scripts' "what infrastructure do we need" intent
-# with a declarative privilege + reference contract the consumer fulfils at
-# install (see PLAN-native-app-packaging.md section 5.1).
+# Declares the privilege + reference contract the consumer fulfils at install.
 #
 # IMAGE PATHS: a single fixed provider-side fully-qualified name, used identically
 # here (the allow-list) and in every CREATE SERVICE in setup_script.sql. They are
@@ -61,8 +59,8 @@ privileges:
   - CREATE WAREHOUSE:
       description: "Query warehouse for the services"
 
-# Consumer binds two existing ACCOUNTADMIN-owned objects at install. These replace
-# the controller's CTRL_PG_HOST / CTRL_PG_PASS secrets and the PG_EAI env var.
+# Consumer binds two existing ACCOUNTADMIN-owned objects at install; the controller
+# reads its Postgres credentials and egress integration through these references.
 references:
   - pg_secret:
       label: "Postgres credentials"

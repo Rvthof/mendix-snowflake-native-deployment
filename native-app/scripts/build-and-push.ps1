@@ -2,8 +2,7 @@
 # package's image repository, and stage a deploy copy with the provider FQN tokens
 # resolved.
 #
-# Replaces the per-component build-and-push scripts; pushes to the native-app image
-# repository (snowflake.yml entity `images`) instead of the ad-hoc POC_REPO.
+# Pushes to the native-app image repository (snowflake.yml entity `images`).
 #
 # Usage:
 #   .\build-and-push.ps1

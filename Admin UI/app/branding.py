@@ -1,9 +1,10 @@
 """Siemens iX-aligned theming for the admin UI.
 
 The iX Classic *dark* palette is delivered through Streamlit's native theme
-config (STREAMLIT_THEME_* env vars in setup.ps1 / update.ps1), pinned to
-`base=dark` because the app runs embedded behind SPCS and would otherwise
-default to light. Native theming colors Streamlit's own widgets correctly.
+config (STREAMLIT_THEME_* env vars in the service spec, set by setup_script.sql),
+pinned to `base=dark` because the app runs embedded behind SPCS and would
+otherwise default to light. Native theming colors Streamlit's own widgets
+correctly.
 
 This module adds only what the native theme cannot: the Titillium Web font
 (native `theme.font` takes no custom family) and the Siemens Deep Blue backdrop

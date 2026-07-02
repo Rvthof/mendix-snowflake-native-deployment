@@ -72,27 +72,13 @@ Each call to `GetCompoundToken` + `ExecuteQuery` creates a new JDBC connection (
 
 ### Deploy and constants update pick up whatever `:latest` resolves to
 
-`ALTER SERVICE FROM SPECIFICATION` re-resolves the image tag at call time. Any deploy or constants update can silently pull a new `mendix-base` version if one was pushed to the registry since the last deploy.
+`ALTER SERVICE FROM SPECIFICATION` re-resolves the image tag at call time, so a `:latest`
+reference can silently pull a new `mendix-base` version pushed since the last deploy.
 
-**Impact:** In a shared registry, a base image push mid-deploy can produce different runtime behaviour than the previous deploy with no visible signal.
-
-**Mitigation:** Pin the image digest in the spec (`image: /repo/mendix-base@sha256:<digest>`) and update it explicitly when the base image changes. Not yet implemented — currently all specs use `:latest`.
-
----
-
-### Controller PAT has a 90-day expiry
-
-The `controllerPat` in `controller-config.json` is generated with `DAYS_TO_EXPIRY = 90`. When it expires, `upload-pad.ps1` starts returning 401 and all deploys fail.
-
-**Action needed:** Track the expiry date and regenerate before it lapses:
-
-```sql
-ALTER USER <you> ADD PROGRAMMATIC ACCESS TOKEN mendix_deploy_controller_pat
-  ROLE_RESTRICTION = 'MENDIX_DEPLOY_CONTROLLER_ROLE'
-  DAYS_TO_EXPIRY = 90;
-```
-
-Update `controllerPat` in `controller-config.json` with the new token value.
+**Status:** mitigated in the Native App packaging — the manifest pins all three images by
+`@sha256` digest, and the controller spawns per-app services from the pinned
+`MENDIX_BASE_IMAGE` value in its spec. The `:latest` fallback only applies when that env var is
+unset (local dev outside the app).
 
 ---
 

@@ -12,8 +12,7 @@
 #
 # This script never flips DISTRIBUTION=EXTERNAL and never runs CREATE EXTERNAL
 # LISTING (both are irreversible / ToS-gated / NAAAPS-gated). It prints those
-# commands for an operator to run deliberately. See PLAN-native-app-packaging.md
-# section 8 and HOW-TO context in app/readme.md.
+# commands for an operator to run deliberately. See HOW-TO-PUBLISH.md.
 #
 # Guardrails: only ever touches MENDIX_SPCS_* objects; reads no secrets, prints none.
 #

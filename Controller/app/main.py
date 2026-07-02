@@ -46,9 +46,9 @@ async def log_operator(request: Request, call_next):
     is_mutation = request.method in ("POST", "PUT", "PATCH", "DELETE")
     response = await call_next(request)
     if is_mutation:
-        # Identify the operator. The admin UI sets X-Operator; PAT clients
-        # (upload-pad.ps1) don't, so resolve the real Snowflake user from the
-        # caller token (a cache hit, since the route dependency already resolved it).
+        # Identify the operator. The admin UI sets X-Operator; direct API clients
+        # don't, so resolve the real Snowflake user from the caller token (a cache
+        # hit, since the route dependency already resolved it).
         operator = request.headers.get("X-Operator")
         if not operator:
             try:
@@ -384,9 +384,8 @@ def create_app(req: CreateAppRequest, roles: set[str] = Depends(caller_roles)):
     if req.use_caller_rights:
         sf.set_caller_token_validity(service_name, 1800)
 
-    # Data-plane access control (PLAN-app-access-control.md A1+B1;
-    # PLAN-native-app-packaging.md section 6): gate the public endpoint behind a
-    # per-app APPLICATION role. End-user membership of app_<name>_user is managed
+    # Data-plane access control: gate the public endpoint behind a per-app
+    # APPLICATION role. End-user membership of app_<name>_user is managed
     # in the IdP via SCIM (GRANT APPLICATION ROLE ... TO USER). Also grant app_admin
     # so any operator can reach the app before the IdP group is populated (owner
     # bootstrap; replaces the old owner_role grant - an application cannot grant its

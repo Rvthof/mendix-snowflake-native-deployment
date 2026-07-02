@@ -1,6 +1,5 @@
 # =============================================================================
-# Snowflake CLI native-app project definition (replaces the hand-rolled setup.ps1
-# orchestration for the provider side; see PLAN-native-app-packaging.md section 8).
+# Snowflake CLI native-app project definition.
 #
 # Deploy:  snow app run            (builds package + installs app in one account)
 # Version: snow app version create

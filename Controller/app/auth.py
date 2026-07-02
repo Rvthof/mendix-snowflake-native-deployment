@@ -9,7 +9,7 @@ Two caller types reach the controller on different network paths:
   when the request also carries the shared ``X-Internal-Auth`` token both in-app
   services hold (``INTERNAL_AUTH_TOKEN`` env, set by setup_script.sql); otherwise a
   tokenless caller gets no roles.
-- Machine clients (e.g. ``upload-pad.ps1``) call the public endpoint with a PAT.
+- Machine clients (e.g. CI/CD pipelines) call the public endpoint with a PAT.
   SPCS injects ``Sf-Context-Current-User-Token`` (because the service runs with
   ``executeAsCaller: true``), which is Snowflake-asserted and cannot be forged.
   We resolve the caller's roles ourselves and ignore any ``X-Operator-Roles``.
@@ -48,8 +48,8 @@ _SERVICE_TOKEN_FILE = "/snowflake/session/token"
 _INTERNAL_AUTH_TOKEN = os.environ.get("INTERNAL_AUTH_TOKEN") or None
 
 # Caller identity (user + roles) is resolved from Snowflake on the public PAT
-# path. upload-pad.ps1 polls every 10s, so without a cache each poll pays a full
-# OAuth handshake; cache the resolved identity briefly, keyed by a hash of the
+# path. Deploy clients poll status every ~10s, so without a cache each poll pays a
+# full OAuth handshake; cache the resolved identity briefly, keyed by a hash of the
 # caller token. TTL is short so freshly granted roles are picked up quickly.
 _IDENTITY_CACHE_TTL_SECS = 60
 

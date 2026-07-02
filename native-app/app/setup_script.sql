@@ -1,11 +1,10 @@
 -- =============================================================================
 -- Mendix-on-SPCS Native App - setup script
 --
--- Runs as the application (app role) on install and upgrade. Replaces:
---   Controller/sql/setup.sql, Controller/setup.ps1, Admin UI/setup.ps1.
+-- Runs as the application (app role) on install and upgrade.
 --
--- The app role owns everything created here, so the object-level GRANTs the old
--- setup.sql issued to MENDIX_DEPLOY_CONTROLLER_ROLE are gone - ownership covers them.
+-- The app role owns everything created here, so no object-level GRANTs to a
+-- separate controller role are needed - ownership covers them.
 --
 -- Provisioning order is driven by Snowflake's callbacks, not by this script's
 -- top-to-bottom flow:
@@ -27,9 +26,8 @@ CREATE SCHEMA IF NOT EXISTS app_public;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin;
 
 -- -----------------------------------------------------------------------------
--- 2. App registry + activity audit log (was YOUR_DB.PUBLIC, now the app namespace)
---    DDL unchanged from Controller/sql/setup.sql except the schema prefix. The app
---    role owns these, so no per-table GRANTs to a controller role are needed.
+-- 2. App registry + activity audit log
+--    The app role owns these, so no per-table GRANTs are needed.
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS app_public.MENDIX_APPS (
     name               VARCHAR    NOT NULL PRIMARY KEY,
@@ -248,19 +246,15 @@ END;
 $$;
 
 -- -----------------------------------------------------------------------------
--- 8. start_controller - ports Controller/setup.ps1 step 4 into SQL.
---    Differences vs. today:
+-- 8. start_controller - creates the controller service.
 --      - DB_SCHEMA env is the app's own <db>.APP_PUBLIC (resolved at runtime).
 --      - IMAGE_REPO env is the fixed provider FQN of the mendix-base image.
 --      - PG_EAI env is reference('pg_eai') so the controller's per-app CREATE
 --        SERVICE emits EXTERNAL_ACCESS_INTEGRATIONS = (reference('pg_eai')).
 --      - The bootstrap PG credential mounts via the bound pg_secret reference
---        (snowflakeSecret.objectReference, NOT reference() which is SQL-level only)
---        instead of the CTRL_PG_HOST / CTRL_PG_PASS secrets created by setup.ps1.
---
---    PHASE 2 CONTROLLER CODE CHANGE REQUIRED: today the controller reads two files
---    /secrets/pg_host and /secrets/pg_pass. With a single bound pg_secret it must
---    read one secret and split host:port from password. Tracked in PLAN section 5.4.
+--        (snowflakeSecret.objectReference, NOT reference() which is SQL-level
+--        only); the controller reads host:port and password from that single
+--        JSON secret at /secrets/pg.
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE app_public.start_controller()
     RETURNS STRING
@@ -352,10 +346,10 @@ END;
 $$;
 
 -- -----------------------------------------------------------------------------
--- 9. start_admin_ui - ports Admin UI/setup.ps1 step 2 into SQL.
---    Both services are owned by the single app role now, so the separate
---    MENDIX_ADMIN_UI_ROLE / cross-role MONITOR grant from setup.ps1 is dropped.
---    Endpoint access goes to app_admin (operators are granted app_admin post-install).
+-- 9. start_admin_ui - creates the admin UI service.
+--    Both services are owned by the single app role, so no cross-role MONITOR
+--    grant is needed. Endpoint access goes to app_admin (operators are granted
+--    app_admin post-install).
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE app_public.start_admin_ui()
     RETURNS STRING

@@ -39,7 +39,11 @@ GRANT APPLICATION ROLE <app_name>.app_admin TO ROLE <operators>;
 ```
 
 Then open the admin UI (the app's default web endpoint) to register and deploy
-Mendix apps.
+Mendix apps. Everything the admin UI does is also available on the controller's
+REST API, so deploys can be scripted from CI/CD — find the endpoint with
+`SHOW ENDPOINTS IN SERVICE <app_name>.app_public.MENDIX_DEPLOY_CONTROLLER;` and
+authenticate with a Programmatic Access Token
+(`Authorization: Snowflake Token="<PAT>"`).
 
 ## Granting the app access to your Snowflake data
 

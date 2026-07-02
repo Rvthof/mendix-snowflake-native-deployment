@@ -4,7 +4,7 @@ This document covers the **provider workflow** only: building images, cutting a 
 
 Consumer install instructions are in `app/readme.md` (shown in Snowsight at install time) and `../mendix-spcs-howto.md`.
 
-> **Authority + verification.** The authoritative design is `../PLAN-native-app-packaging.md` §8 (build & release pipeline) and §9 (R1, the EXTERNAL/NAAAPS gate); this file is the operational runbook. The `snow app version create` and `snow app release-directive set` invocations below are verified against `snow app … --help`. Items still to confirm against live behavior are tagged **(verify at run)** — do not treat them as settled.
+> **Verification.** This file is the operational runbook. The `snow app version create` and `snow app release-directive set` invocations below are verified against `snow app … --help`. Items still to confirm against live behavior are tagged **(verify at run)** — do not treat them as settled.
 
 ---
 
@@ -189,6 +189,15 @@ ALTER APPLICATION MENDIX_SPCS_APP UPGRADE USING VERSION v1 PATCH <N+1>;
 ```
 
 or via Snowsight if auto-upgrade is enabled on the listing.
+
+> **In-place upgrade does not refresh running services.** The start procedures use
+> `CREATE SERVICE IF NOT EXISTS`, so an upgrade is a no-op for a service that already exists —
+> its spec and env (e.g. the `MENDIX_BASE_IMAGE` digest) stay at the old values. When a patch
+> changes a service image or env var, the consumer must reinstall
+> (`DROP APPLICATION ... CASCADE` + fresh `CREATE APPLICATION`); an in-place upgrade suffices
+> only when the change is confined to `setup_script.sql` / manifest logic. Relatedly,
+> `ALTER SERVICE SUSPEND` + `RESUME` never re-pulls a `:latest` tag — SPCS pins the digest at
+> CREATE / ALTER time; only `ALTER SERVICE FROM SPECIFICATION` re-resolves it.
 
 ---
 
