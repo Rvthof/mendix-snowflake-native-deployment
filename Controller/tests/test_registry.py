@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from app import registry
+from app.models import HIDDEN_VALUE, AppRecord
+
+
+class TestMaskConstants:
+    def test_values_replaced_keys_kept(self):
+        result = registry._mask_constants({"A.B": "secret1", "A.C": "secret2"})
+        assert result == {"A.B": HIDDEN_VALUE, "A.C": HIDDEN_VALUE}
+
+
+class TestRowToRecord:
+    def _row(self, **overrides):
+        row = {
+            "NAME": "myapp",
+            "SERVICE_NAME": "MYAPP_SERVICE",
+            "APP_SCHEMA": "MXAPP_MYAPP",
+            "PG_DATABASE": "myapp_db",
+            "RESOURCE_TIER": "medium",
+            "USE_CALLER_RIGHTS": True,
+            "CONSTANTS": {"A.B": HIDDEN_VALUE},
+            "PAD_STAGE_PATH": None,
+            "ENDPOINT_URL": None,
+            "LAST_DEPLOY_STATUS": "READY",
+            "CREATED_AT": None,
+            "LAST_DEPLOYED_AT": None,
+            "OWNER_ROLE": "OWNER_ROLE",
+        }
+        row.update(overrides)
+        return row
+
+    def test_string_constants_json_decoded(self):
+        row = self._row(CONSTANTS='{"A.B": "hidden"}')
+        record = registry._row_to_record(row)
+        assert record.constants == {"A.B": "hidden"}
+
+    def test_dict_constants_passed_through(self):
+        row = self._row(CONSTANTS={"A.B": "v"})
+        record = registry._row_to_record(row)
+        assert record.constants == {"A.B": "v"}
+
+    def test_none_constants_becomes_empty_dict(self):
+        row = self._row(CONSTANTS=None)
+        record = registry._row_to_record(row)
+        assert record.constants == {}
+
+    def test_defaults_applied(self):
+        row = self._row(RESOURCE_TIER=None, OWNER_ROLE=None)
+        record = registry._row_to_record(row)
+        assert record.resource_tier == "medium"
+        assert record.owner_role == "MENDIX_ADMIN_OPERATOR_ROLE"
+
+    def test_timestamps_stringified(self):
+        row = self._row(CREATED_AT=12345, LAST_DEPLOYED_AT=6789)
+        record = registry._row_to_record(row)
+        assert record.created_at == "12345"
+        assert record.last_deployed_at == "6789"
+
+    def test_use_caller_rights_truthiness(self):
+        row = self._row(USE_CALLER_RIGHTS=0)
+        record = registry._row_to_record(row)
+        assert record.use_caller_rights is False
+
+
+class TestCreateApp:
+    def test_insert_params_never_contain_plaintext_value(self, fake_execute_sql):
+        record = AppRecord(
+            name="myapp", service_name="MYAPP_SERVICE", app_schema="MXAPP_MYAPP",
+            pg_database="myapp_db", resource_tier="medium", use_caller_rights=False,
+            constants={"A.B": "super-secret-value"}, owner_role="OWNER_ROLE",
+            pad_stage_path=None, endpoint_url=None, last_deploy_status="NOT_DEPLOYED",
+            created_at=None, last_deployed_at=None,
+        )
+        registry.create_app(record)
+        sql, params = fake_execute_sql.calls[0]
+        assert "INSERT INTO" in sql
+        assert "super-secret-value" not in json.dumps(params)
+        constants_json = [p for p in params if isinstance(p, str) and "A.B" in p][0]
+        assert json.loads(constants_json) == {"A.B": HIDDEN_VALUE}
+
+
+class TestGetApp:
+    def test_none_on_empty_rows(self, fake_execute_sql):
+        fake_execute_sql.returns = [[]]
+        assert registry.get_app("myapp") is None
+
+    def test_binds_name_as_param(self, fake_execute_sql):
+        fake_execute_sql.returns = [[]]
+        registry.get_app("myapp")
+        sql, params = fake_execute_sql.calls[0]
+        assert params == ("myapp",)
+        assert "%s" in sql
+
+
+class TestUpdateApp:
+    def test_unknown_column_raises_no_sql(self, fake_execute_sql):
+        with pytest.raises(ValueError):
+            registry.update_app("myapp", {"not_a_real_column": "x"})
+        assert fake_execute_sql.calls == []
+
+    def test_constants_routed_through_parse_json_with_masking(self, fake_execute_sql):
+        registry.update_app("myapp", {"constants": {"A.B": "secret"}})
+        sql, params = fake_execute_sql.calls[0]
+        assert "constants = PARSE_JSON(%s)" in sql
+        assert json.loads(params[0]) == {"A.B": HIDDEN_VALUE}
+
+    def test_multiple_fields_build_set_clause_name_last(self, fake_execute_sql):
+        registry.update_app("myapp", {"endpoint_url": "https://x", "last_deploy_status": "READY"})
+        sql, params = fake_execute_sql.calls[0]
+        assert "SET endpoint_url = %s, last_deploy_status = %s" in sql
+        assert params == ("https://x", "READY", "myapp")
+
+    def test_empty_dict_no_sql(self, fake_execute_sql):
+        registry.update_app("myapp", {})
+        assert fake_execute_sql.calls == []
+
+
+class TestDeleteApp:
+    def test_parameterized_delete(self, fake_execute_sql):
+        registry.delete_app("myapp")
+        sql, params = fake_execute_sql.calls[0]
+        assert "DELETE FROM" in sql
+        assert params == ("myapp",)

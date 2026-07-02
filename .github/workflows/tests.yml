@@ -1,0 +1,75 @@
+# Unit/integration tests for the two Python services. Fully offline: every
+# Snowflake and HTTP boundary is mocked; no credentials are used anywhere.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Controller/**'
+      - 'Admin UI/**'
+      - 'pyproject.toml'
+      - 'requirements-dev.txt'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Controller/**'
+      - 'Admin UI/**'
+      - 'pyproject.toml'
+      - 'requirements-dev.txt'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: Controller
+            slug: controller
+            requirements: Controller/requirements.txt
+            tests: Controller/tests
+            cov: Controller/app
+          - service: Admin UI
+            slug: admin-ui
+            requirements: Admin UI/requirements.txt
+            tests: Admin UI/tests
+            cov: Admin UI/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the python:3.12-slim base of both service images.
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            ${{ matrix.requirements }}
+            requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r "${{ matrix.requirements }}" -r requirements-dev.txt
+      - name: Run pytest with coverage
+        run: >
+          python -m pytest "${{ matrix.tests }}"
+          "--cov=${{ matrix.cov }}"
+          --cov-report=term-missing
+          "--cov-report=xml:coverage-${{ matrix.slug }}.xml"
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.slug }}
+          path: coverage-${{ matrix.slug }}.xml

@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+testpaths = ["Controller/tests", "Admin UI/tests"]
+addopts = "--import-mode=importlib -ra --strict-markers"
+
+[tool.coverage.run]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/pages/*",
+    "*/streamlit_app.py",
+    "*/branding.py",
+    "*/data.py",
+    "*/assets/*",
+]
+
+[tool.coverage.report]
+show_missing = true
